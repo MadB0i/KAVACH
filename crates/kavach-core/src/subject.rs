@@ -21,7 +21,9 @@ pub const MAX_CAPABILITY_LEN: usize = 64;
 ///
 /// The internal label is constrained to `A-Za-z0-9._-`, is non-empty, and is
 /// bounded by [`MAX_CAPABILITY_LEN`].
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "&str", into = "String")]
 pub struct Capability(String);
 
@@ -31,7 +33,10 @@ impl Capability {
         let s = label.as_ref();
         let len = s.chars().count();
         if s.is_empty() {
-            return Err(DomainError::new(DomainErrorKind::InvalidId, "empty capability"));
+            return Err(DomainError::new(
+                DomainErrorKind::InvalidId,
+                "empty capability",
+            ));
         }
         if len > MAX_CAPABILITY_LEN {
             return Err(DomainError::new(
@@ -54,6 +59,7 @@ impl Capability {
     }
 }
 
+/// Returns true if the character is permitted in a [`Capability`] label.
 fn is_capability_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-'
 }
@@ -93,7 +99,9 @@ impl TryFrom<&str> for Capability {
 ///
 /// Order is [`PartialOrd`]/[`Ord`] meaningful: `Untrusted < Restricted <
 /// Standard < Trusted < System`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustLevel {
     /// No trust assumptions. Treat all requests with maximum suspicion.
@@ -138,7 +146,7 @@ impl FromStr for TrustLevel {
             "system" => Ok(Self::System),
             other => Err(DomainError::new(
                 DomainErrorKind::UnknownVariant,
-                "unknown trust level: {other}",
+                format!("unknown trust level: {other}"),
             )),
         }
     }

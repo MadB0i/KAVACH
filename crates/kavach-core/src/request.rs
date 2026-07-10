@@ -5,7 +5,6 @@
 //! only data specific to the action; everything shared (subject, resource,
 //! context) lives on [`ToolRequest`].
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -111,10 +110,12 @@ impl Operation {
             "command_execute" => Ok(Self::CommandExecute),
             "network_request" => Ok(Self::NetworkRequest),
             "secret_access" => Ok(Self::SecretAccess),
-            "tool_invoke" => Ok(Self::ToolInvoke { tool_id: String::new() }),
+            "tool_invoke" => Ok(Self::ToolInvoke {
+                tool_id: String::new(),
+            }),
             other => Err(DomainError::new(
                 DomainErrorKind::UnknownVariant,
-                "unknown operation: {other}",
+                format!("unknown operation: {other}"),
             )),
         }
     }
@@ -158,12 +159,11 @@ impl RequestContext {
         dry_run: bool,
     ) -> Result<Self, PathError> {
         let working_directory = match working_directory {
-            Some(w) if w.is_empty() => None,
+            None | Some("") => None,
             Some(w) => Some(NormalizedPath::new(w)?),
-            None => None,
         };
         let declared_intent = match declared_intent {
-            Some(d) if d.is_empty() => None,
+            None | Some("") => None,
             Some(d) => {
                 if d.len() > MAX_SHORT_STRING_LEN {
                     return Err(PathError::from_kind(
@@ -179,7 +179,6 @@ impl RequestContext {
                 }
                 Some(d.to_string())
             }
-            None => None,
         };
         Ok(Self {
             timestamp: SystemTime::now(),
@@ -217,7 +216,13 @@ impl ToolRequest {
         resource: crate::resource::Resource,
         context: RequestContext,
     ) -> Self {
-        Self { request_id, subject, operation, resource, context }
+        Self {
+            request_id,
+            subject,
+            operation,
+            resource,
+            context,
+        }
     }
 }
 
@@ -249,7 +254,9 @@ impl AgentSubjectBuilder {
             None => None,
             Some(s) => {
                 let s = s.into();
-                if s.bytes().any(|b| b == 0 || b.is_ascii_control() && b != b'\t') {
+                if s.bytes()
+                    .any(|b| b == 0 || b.is_ascii_control() && b != b'\t')
+                {
                     return Err(DomainError::new(
                         DomainErrorKind::InvalidCharacter,
                         "display name contains control characters",
@@ -313,7 +320,8 @@ mod ops_tests {
             "tool_invoke",
         ];
         for label in labels {
-            let op = Operation::from_label(label).expect("round trip");
+            let op = Operation::from_label(label)
+                .unwrap_or_else(|e| panic!("round trip parse failed for {label}: {e}"));
             assert_eq!(op.discriminant(), label);
         }
     }

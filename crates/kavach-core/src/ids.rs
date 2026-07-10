@@ -19,10 +19,16 @@ pub(crate) fn validate_id(value: &str) -> Result<(), DomainError> {
         return Err(DomainError::new(DomainErrorKind::InvalidId, "empty id"));
     }
     if len > MAX_ID_LEN {
-        return Err(DomainError::new(DomainErrorKind::OversizedField, "id exceeds maximum length"));
+        return Err(DomainError::new(
+            DomainErrorKind::OversizedField,
+            "id exceeds maximum length",
+        ));
     }
     if value.chars().any(|c| c.is_control()) {
-        return Err(DomainError::new(DomainErrorKind::InvalidCharacter, "id contains control characters"));
+        return Err(DomainError::new(
+            DomainErrorKind::InvalidCharacter,
+            "id contains control characters",
+        ));
     }
     Ok(())
 }
@@ -73,11 +79,6 @@ macro_rules! id_newtype {
             fn from(value: $crate::ids::$name) -> String {
                 value.0
             }
-        }
-
-        #[allow(clippy::use_self)]
-        impl $crate::ids::$name {
-            const LABEL: &'static str = $label;
         }
     };
 }

@@ -104,7 +104,7 @@ impl FromStr for ReasonCode {
             "kavach_deny_path_escape" => Ok(Self::KavachDenyPathEscape),
             other => Err(DomainError::new(
                 DomainErrorKind::UnknownVariant,
-                "unknown reason code: {other}",
+                format!("unknown reason code: {other}"),
             )),
         }
     }
@@ -144,6 +144,11 @@ pub struct AuthorizationDecision {
 
 impl AuthorizationDecision {
     /// Construct a decision, ensuring rule IDs are sorted deterministically.
+    ///
+    /// The eight parameters mirror the eight documented fields of
+    /// [`AuthorizationDecision`]; splitting them now would be premature
+    /// abstraction for an immutable data record.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         effect: DecisionEffect,
         reason: ReasonCode,

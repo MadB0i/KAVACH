@@ -35,12 +35,13 @@ globset = "0.4"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
-rust_2024_compatibility = "warn"
+# Lint group must have a negative priority so it does not share the default 0
+# with individual lints and trigger `unknown_lint`/priority conflicts.
+rust_2024_compatibility = { level = "warn", priority = -1 }
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
-cargo = { level = "warn", priority = -1 }
-# Sensitive, low-noise restrictions.
+# Sensitive, low-noise restrictions kept hard-denied.
 dbg_macro = "deny"
 print_stderr = "deny"
 print_stdout = "deny"
@@ -51,5 +52,9 @@ todo = "deny"
 unimplemented = "deny"
 unreachable = "deny"
 index_refutable_slice = "deny"
-missing_docs_in_private_items = "warn"
-must_use_candidate = "warn"
+# Pedantic/noise lints left off by default (their `warn` form would escalate to
+# deny under `-D warnings` and flood the build). Enable per-call when wanted.
+must_use_candidate = "allow"
+missing_docs_in_private_items = "allow"
+# Cargo metadata lints are advisory; do not fail CI over missing `readme`.
+cargo = { level = "allow", priority = -1 }

@@ -27,10 +27,10 @@ pub mod subject;
 
 pub use decision::{ApprovalRequirements, AuthorizationDecision, DecisionEffect, ReasonCode};
 pub use error::{DomainError, DomainErrorKind};
-pub use ids::{AgentId, ApprovalId, PolicyId, RequestId, RuleId, SessionId, MAX_ID_LEN};
+pub use ids::{AgentId, ApprovalId, MAX_ID_LEN, PolicyId, RequestId, RuleId, SessionId};
 pub use request::{AgentSubjectBuilder, Operation, RequestContext, ToolRequest};
 pub use resource::{
-    CommandResource, NetworkHost, NetworkPort, NetworkResource, NetworkScheme, NormalizedPath, PathError,
-    PathErrorKind, RequestMetadata, Resource, ResourceKind, MAX_PATH_LEN,
+    CommandResource, MAX_PATH_LEN, NetworkHost, NetworkPort, NetworkResource, NetworkScheme,
+    NormalizedPath, PathError, PathErrorKind, RequestMetadata, Resource, ResourceKind,
 };
-pub use subject::{AgentSubject, Capability, CapabilitySet, TrustLevel, MAX_CAPABILITY_LEN};
+pub use subject::{AgentSubject, Capability, CapabilitySet, MAX_CAPABILITY_LEN, TrustLevel};

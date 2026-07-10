@@ -45,7 +45,10 @@ pub struct DomainError {
 impl DomainError {
     /// Create a new domain error from a kind and a non-secret context string.
     pub fn new(kind: DomainErrorKind, context: impl fmt::Display) -> Self {
-        Self { kind, context: context.to_string() }
+        Self {
+            kind,
+            context: context.to_string(),
+        }
     }
 
     /// Returns the stable error category.

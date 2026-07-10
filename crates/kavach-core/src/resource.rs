@@ -51,7 +51,10 @@ pub struct PathError {
 impl PathError {
     /// Construct a path error from a stable kind and a non-secret context message.
     pub fn from_kind(kind: PathErrorKind, context: impl fmt::Display) -> Self {
-        Self { kind, context: context.to_string() }
+        Self {
+            kind,
+            context: context.to_string(),
+        }
     }
 
     /// Returns the stable error category.
@@ -102,7 +105,9 @@ impl From<PathError> for DomainError {
 /// Lexical normalization does **not** protect against symlink traversal. A
 /// symlink whose target lies outside the workspace cannot be detected here.
 /// Filesystem-aware enforcement is a future layer.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "&str", into = "String")]
 pub struct NormalizedPath {
     raw: String,
@@ -119,9 +124,14 @@ impl NormalizedPath {
             return Err(PathError::from_kind(PathErrorKind::Empty, "empty path"));
         }
         if s.len() > MAX_PATH_LEN {
-            return Err(PathError::from_kind(PathErrorKind::Oversized, "path exceeds maximum length"));
+            return Err(PathError::from_kind(
+                PathErrorKind::Oversized,
+                "path exceeds maximum length",
+            ));
         }
-        if s.bytes().any(|b| b == 0 || b.is_ascii_control() && b != b'\t') {
+        if s.bytes()
+            .any(|b| b == 0 || b.is_ascii_control() && b != b'\t')
+        {
             return Err(PathError::from_kind(
                 PathErrorKind::InvalidCharacter,
                 "path contains null or control bytes",
@@ -129,10 +139,15 @@ impl NormalizedPath {
         }
 
         let absolute = s.starts_with('/') || s.starts_with('\\') || has_drive_prefix(s);
-        let normalized = normalize_lexical(s)
-            .ok_or_else(|| PathError::from_kind(PathErrorKind::Escape, "path escapes its own root via '..'"))?;
+        let normalized = normalize_lexical(s).ok_or_else(|| {
+            PathError::from_kind(PathErrorKind::Escape, "path escapes its own root via '..'")
+        })?;
 
-        Ok(Self { raw: s.to_string(), normalized, absolute })
+        Ok(Self {
+            raw: s.to_string(),
+            normalized,
+            absolute,
+        })
     }
 
     /// The original, unmodified input string.
@@ -167,7 +182,10 @@ impl NormalizedPath {
         if let Some(rest) = s.strip_prefix('/') {
             s = rest;
         }
-        s.split('/').filter(|seg| !seg.is_empty()).map(str::to_string).collect()
+        s.split('/')
+            .filter(|seg| !seg.is_empty())
+            .map(str::to_string)
+            .collect()
     }
 }
 
@@ -204,19 +222,25 @@ fn has_drive_prefix(s: &str) -> bool {
 }
 
 /// Strip a recognized prefix (Windows drive, UNC `\\?\` or verbatim) from the
-/// normalized path. Returns `(prefix_label, remainder_without_leading_sep)` so
-/// that segmentation can proceed uniformly.
-fn strip_known_prefix(s: &str) -> Option<(&'static str, &str)> {
+/// normalized path. Returns `(prefix_label, remainder_after_prefix)` so that
+/// segmentation can proceed uniformly. The label is borrowed from `s` so the
+/// exact drive letter is preserved.
+fn strip_known_prefix(s: &str) -> Option<(&str, &str)> {
     let lower = s.to_ascii_lowercase();
-    if let Some(rest) = lower.strip_prefix("\\\\?\\unc\\") {
-        return Some(("\\\\?\\UNC\\", s.get(7..).unwrap_or_default()));
+    if lower.strip_prefix("\\\\?\\unc\\").is_some() {
+        // The unc marker is 7 ASCII bytes: `\\?\UNC\`.
+        let (label, rest) = s.split_at(7);
+        return Some((label, rest));
     }
-    if let Some(rest) = lower.strip_prefix("\\\\?\\") {
-        return Some(("\\\\?\\", s.get(4..).unwrap_or_default()));
+    if lower.strip_prefix("\\\\?\\").is_some() {
+        // The verbatim marker is 4 ASCII bytes: `\\?\`.
+        let (label, rest) = s.split_at(4);
+        return Some((label, rest));
     }
     if has_drive_prefix(s) {
-        let rest = s.get(2..).unwrap_or_default();
-        return Some(("X:", rest));
+        // The drive prefix is exactly 2 ASCII bytes: `X:`.
+        let (label, rest) = s.split_at(2);
+        return Some((label, rest));
     }
     None
 }
@@ -230,47 +254,27 @@ pub(crate) fn normalize_lexical(input: &str) -> Option<String> {
         return Some(merge_prefix(label, &body));
     }
 
-    let (root, body) = match split_unix_root(input) {
-        Some((r, b)) => (Some(r), b),
-        None => (None, input),
-    };
+    let leading_slash = input.starts_with('/');
+    let body = if leading_slash { &input[1..] } else { input };
 
     let normalized_body = normalize_body(body)?;
-    match root {
-        Some(sep) if input.starts_with('/') => Some(format!("/{normalized_body}")),
-        Some(_) => {
-            // Single backslash-leading relative input: normalize forward.
-            if normalized_body.is_empty() {
-                Some("/".to_string())
-            } else {
-                Some(format!("/{normalized_body}"))
-            }
-        }
-        None => Some(normalized_body),
-    }
-}
-
-/// Split an input that begins with one or more `/` into a marker and its body.
-fn split_unix_root(input: &str) -> Option<(&'static str, &str)> {
-    if let Some(rest) = input.strip_prefix('/') {
-        Some(("/", rest))
+    if leading_slash {
+        Some(format!("/{normalized_body}"))
     } else {
-        None
+        Some(normalized_body)
     }
 }
 
 /// Normalize the body of a path after a prefix/root has been stripped.
 fn normalize_body(body: &str) -> Option<String> {
     let mut segments: Vec<String> = Vec::new();
-    for raw_seg in body.split(|c: char| c == '/' || c == '\\') {
+    for raw_seg in body.split(['/', '\\']) {
         let seg = raw_seg.trim_end_matches('\0');
         match seg {
             "" | "." => {}
             ".." => {
-                if segments.pop().is_none() {
-                    // Escaping the root within core is not allowed.
-                    return None;
-                }
+                // Escaping the root within core is not allowed.
+                segments.pop()?;
             }
             other => segments.push(other.to_string()),
         }
@@ -278,16 +282,24 @@ fn normalize_body(body: &str) -> Option<String> {
     Some(segments.join("/"))
 }
 
+/// Re-join a preserved prefix label with the normalized body, inserting a
+/// forward-slash separator only when both halves need one.
 fn merge_prefix(label: &str, body: &str) -> String {
     if body.is_empty() {
         return label.to_string();
     }
-    let sep = if body.starts_with('/') || label.ends_with('\\') { "" } else { "/" };
+    let sep = if body.starts_with('/') || label.ends_with('\\') {
+        ""
+    } else {
+        "/"
+    };
     format!("{label}{sep}{body}")
 }
 
 /// A network scheme label, validated and lower-cased for stable comparison.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "&str", into = "String")]
 pub struct NetworkScheme(String);
 
@@ -296,13 +308,25 @@ impl NetworkScheme {
     pub fn new(value: impl AsRef<str> + fmt::Display) -> Result<Self, PathError> {
         let s = value.as_ref();
         if s.is_empty() {
-            return Err(PathError::from_kind(PathErrorKind::InvalidEndpoint, "empty scheme"));
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidEndpoint,
+                "empty scheme",
+            ));
         }
         if s.len() > 32 {
-            return Err(PathError::from_kind(PathErrorKind::Oversized, "scheme exceeds maximum length"));
+            return Err(PathError::from_kind(
+                PathErrorKind::Oversized,
+                "scheme exceeds maximum length",
+            ));
         }
-        if !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.') {
-            return Err(PathError::from_kind(PathErrorKind::InvalidCharacter, "scheme contains invalid characters"));
+        if !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+        {
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidCharacter,
+                "scheme contains invalid characters",
+            ));
         }
         Ok(Self(s.to_lowercase()))
     }
@@ -340,7 +364,9 @@ impl From<NetworkScheme> for String {
 }
 
 /// A network host label, validated and lower-cased for stable comparison.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "&str", into = "String")]
 pub struct NetworkHost(String);
 
@@ -349,13 +375,25 @@ impl NetworkHost {
     pub fn new(value: impl AsRef<str> + fmt::Display) -> Result<Self, PathError> {
         let s = value.as_ref();
         if s.is_empty() {
-            return Err(PathError::from_kind(PathErrorKind::InvalidEndpoint, "empty host"));
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidEndpoint,
+                "empty host",
+            ));
         }
         if s.len() > 255 {
-            return Err(PathError::from_kind(PathErrorKind::Oversized, "host exceeds maximum length"));
+            return Err(PathError::from_kind(
+                PathErrorKind::Oversized,
+                "host exceeds maximum length",
+            ));
         }
-        if !s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_' | '[' | ']')) {
-            return Err(PathError::from_kind(PathErrorKind::InvalidCharacter, "host contains invalid characters"));
+        if !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_' | '[' | ']'))
+        {
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidCharacter,
+                "host contains invalid characters",
+            ));
         }
         Ok(Self(s.to_lowercase()))
     }
@@ -393,7 +431,9 @@ impl From<NetworkHost> for String {
 }
 
 /// A validated TCP/UDP port number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "u16")]
 pub struct NetworkPort(u16);
 
@@ -441,9 +481,17 @@ impl NetworkResource {
         path: &str,
     ) -> Result<Self, PathError> {
         if path.is_empty() {
-            return Err(PathError::from_kind(PathErrorKind::InvalidEndpoint, "empty path"));
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidEndpoint,
+                "empty path",
+            ));
         }
-        Ok(Self { scheme, host, port, path: NormalizedPath::new(path)? })
+        Ok(Self {
+            scheme,
+            host,
+            port,
+            path: NormalizedPath::new(path)?,
+        })
     }
 
     /// Network scheme (for example `https`).
@@ -486,26 +534,47 @@ impl CommandResource {
     pub fn new(executable: impl Into<String>, arguments: Vec<String>) -> Result<Self, PathError> {
         let exe = executable.into();
         if exe.is_empty() {
-            return Err(PathError::from_kind(PathErrorKind::InvalidEndpoint, "empty executable"));
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidEndpoint,
+                "empty executable",
+            ));
         }
         if exe.len() > MAX_PATH_LEN {
-            return Err(PathError::from_kind(PathErrorKind::Oversized, "executable exceeds maximum length"));
+            return Err(PathError::from_kind(
+                PathErrorKind::Oversized,
+                "executable exceeds maximum length",
+            ));
         }
-        if exe.bytes().any(|b| b == 0 || b.is_ascii_control() && b != b'\t') {
-            return Err(PathError::from_kind(PathErrorKind::InvalidCharacter, "executable contains null or control bytes"));
+        if exe
+            .bytes()
+            .any(|b| b == 0 || b.is_ascii_control() && b != b'\t')
+        {
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidCharacter,
+                "executable contains null or control bytes",
+            ));
         }
         for arg in &arguments {
             if arg.len() > MAX_PATH_LEN {
-                return Err(PathError::from_kind(PathErrorKind::Oversized, "argument exceeds maximum length"));
+                return Err(PathError::from_kind(
+                    PathErrorKind::Oversized,
+                    "argument exceeds maximum length",
+                ));
             }
-            if arg.bytes().any(|b| b == 0 || b.is_ascii_control() && b != b'\t') {
+            if arg
+                .bytes()
+                .any(|b| b == 0 || b.is_ascii_control() && b != b'\t')
+            {
                 return Err(PathError::from_kind(
                     PathErrorKind::InvalidCharacter,
                     "argument contains null or control bytes",
                 ));
             }
         }
-        Ok(Self { executable: exe, arguments })
+        Ok(Self {
+            executable: exe,
+            arguments,
+        })
     }
 
     /// The executable program path or name.
@@ -535,17 +604,30 @@ impl RequestMetadata {
     }
 
     /// Insert an entry, enforcing the maximum entry count and field length.
-    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<(), PathError> {
+    pub fn insert(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<(), PathError> {
         let key = key.into();
         let value = value.into();
         if key.is_empty() || key.len() > 128 {
-            return Err(PathError::from_kind(PathErrorKind::Oversized, "metadata key invalid length"));
+            return Err(PathError::from_kind(
+                PathErrorKind::Oversized,
+                "metadata key invalid length",
+            ));
         }
         if value.len() > MAX_PATH_LEN {
-            return Err(PathError::from_kind(PathErrorKind::Oversized, "metadata value exceeds maximum length"));
+            return Err(PathError::from_kind(
+                PathErrorKind::Oversized,
+                "metadata value exceeds maximum length",
+            ));
         }
         if !self.0.contains_key(&key) && self.0.len() + 1 > Self::MAX_ENTRIES {
-            return Err(PathError::from_kind(PathErrorKind::Oversized, "metadata exceeds maximum entries"));
+            return Err(PathError::from_kind(
+                PathErrorKind::Oversized,
+                "metadata exceeds maximum entries",
+            ));
         }
         self.0.insert(key, value);
         Ok(())
@@ -576,7 +658,9 @@ impl RequestMetadata {
 ///
 /// `Unknown` exists to make "unknown resource" an explicit, fail-closed
 /// variant rather than a silent fall-through.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     /// A single file on disk.
@@ -623,7 +707,7 @@ impl FromStr for ResourceKind {
             "unknown" => Ok(Self::Unknown),
             other => Err(DomainError::new(
                 DomainErrorKind::UnknownVariant,
-                "unknown resource kind: {other}",
+                format!("unknown resource kind: {other}"),
             )),
         }
     }
@@ -665,12 +749,16 @@ pub enum Resource {
 impl Resource {
     /// Convenience factory for file resources.
     pub fn file(path: &str) -> Result<Self, PathError> {
-        Ok(Self::File { path: NormalizedPath::new(path)? })
+        Ok(Self::File {
+            path: NormalizedPath::new(path)?,
+        })
     }
 
     /// Convenience factory for directory resources.
     pub fn directory(path: &str) -> Result<Self, PathError> {
-        Ok(Self::Directory { path: NormalizedPath::new(path)? })
+        Ok(Self::Directory {
+            path: NormalizedPath::new(path)?,
+        })
     }
 
     /// Returns the [`ResourceKind`] discriminant for this resource.
