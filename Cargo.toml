@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kavach-core",
+    "crates/kavach-policy",
+    "crates/kavach-config",
+    "crates/kavach-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+authors = ["KAVACH Contributors"]
+repository = "https://github.com/anomalyco/kavach"
+description = "Open-source zero-trust security runtime for AI agents"
+keywords = ["security", "ai", "zero-trust", "policy", "agent"]
+categories = ["access-control", "config"]
+
+[workspace.dependencies]
+kavach-core = { path = "crates/kavach-core", version = "0.1.0" }
+kavach-policy = { path = "crates/kavach-policy", version = "0.1.0" }
+kavach-config = { path = "crates/kavach-config", version = "0.1.0" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+clap = { version = "4", features = ["derive", "color", "wrap_help"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+globset = "0.4"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+rust_2024_compatibility = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Sensitive, low-noise restrictions.
+dbg_macro = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic_in_result_fn = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+index_refutable_slice = "deny"
+missing_docs_in_private_items = "warn"
+must_use_candidate = "warn"

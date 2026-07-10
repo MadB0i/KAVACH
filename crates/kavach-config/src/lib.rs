@@ -1,0 +1,1 @@
+//! KAVACH layered configuration placeholder.

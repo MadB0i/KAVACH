@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+*.pdb
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.iml
+.env
+.env.*
+!.env.example
