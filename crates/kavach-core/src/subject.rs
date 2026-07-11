@@ -159,7 +159,7 @@ pub type CapabilitySet = BTreeSet<Capability>;
 /// carrying an explicit set of capabilities.
 ///
 /// Trust level and capability set are **policy inputs**. They are never used
-/// as automatic authorization; a policy rule still has to match for any of them
+/// as automatic authorization; a policy rule has to match for any of them
 /// to matter. Construction goes through the
 /// [`AgentSubjectBuilder`](crate::request::AgentSubjectBuilder) so that all
 /// validation happens up front.
@@ -175,4 +175,36 @@ pub struct AgentSubject {
     pub trust_level: TrustLevel,
     /// Capabilities the subject declared it has. Input to policy only.
     pub declared_capabilities: CapabilitySet,
+}
+
+impl AgentSubject {
+    /// Re-validate every invariant of a possibly-deserialized subject.
+    ///
+    /// Identifiers and capabilities route through validating serde impls, but
+    /// `display_name` is a plain [`Option<String>`] that bypasses length and
+    /// control-byte checks when deserialized; this re-checks it so a request
+    /// reconstructed from JSON cannot smuggle through an oversized or
+    /// control-laden display name.
+    pub(crate) fn validate_invariants(&self) -> Result<(), DomainError> {
+        crate::ids::validate_id(self.agent_id.as_str())?;
+        crate::ids::validate_id(self.session_id.as_str())?;
+        if let Some(name) = &self.display_name {
+            if name.len() > crate::request::MAX_SHORT_STRING_LEN {
+                return Err(DomainError::new(
+                    DomainErrorKind::OversizedField,
+                    "display name exceeds maximum length",
+                ));
+            }
+            if name
+                .bytes()
+                .any(|b| b == 0 || b.is_ascii_control() && b != b'\t')
+            {
+                return Err(DomainError::new(
+                    DomainErrorKind::InvalidCharacter,
+                    "display name contains control characters",
+                ));
+            }
+        }
+        Ok(())
+    }
 }

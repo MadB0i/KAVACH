@@ -23,6 +23,10 @@ use crate::error::{DomainError, DomainErrorKind};
 /// Maximum number of bytes in the raw input form of a normalized path.
 pub const MAX_PATH_LEN: usize = 4096;
 
+/// Maximum number of bytes in a secret or external-tool identifier carried by
+/// a [`Resource`]. Identifiers are non-secret, stable references.
+pub const MAX_IDENTIFIER_LEN: usize = 1024;
+
 /// Stable category of path validation/normalization failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +41,8 @@ pub enum PathErrorKind {
     /// workspace anchor. The policy engine uses an explicit workspace root to
     /// reason about traversal instead.
     Escape,
+    /// A stored invariants check failed (typically after deserialization).
+    InvalidValue,
     /// A network host or port was malformed.
     InvalidEndpoint,
 }
@@ -81,7 +87,7 @@ impl From<PathError> for DomainError {
                 DomainErrorKind::InvalidValue
             }
             PathErrorKind::InvalidCharacter => DomainErrorKind::InvalidCharacter,
-            PathErrorKind::Escape => DomainErrorKind::InvalidValue,
+            PathErrorKind::Escape | PathErrorKind::InvalidValue => DomainErrorKind::InvalidValue,
         };
         DomainError::new(kind, value.context)
     }
@@ -186,6 +192,56 @@ impl NormalizedPath {
             .filter(|seg| !seg.is_empty())
             .map(str::to_string)
             .collect()
+    }
+
+    /// Re-validate every invariant of a possibly-deserialized value.
+    ///
+    /// The [`NormalizedPath`] serde impl routes through [`Self::new`], but
+    /// future internal refactors or `#[serde(flatten)]` callers could assemble
+    /// one from raw fields. Depth validation keeps the type trustworthy by
+    /// re-checking emptiness, length, control bytes, absolute/relative marker
+    /// consistency and that the stored normalized form actually corresponds to
+    /// the stored raw form.
+    pub(crate) fn validate_invariants(&self) -> Result<(), PathError> {
+        if self.raw.is_empty() {
+            return Err(PathError::from_kind(PathErrorKind::Empty, "empty path"));
+        }
+        if self.raw.len() > MAX_PATH_LEN {
+            return Err(PathError::from_kind(
+                PathErrorKind::Oversized,
+                "path exceeds maximum length",
+            ));
+        }
+        if self
+            .raw
+            .bytes()
+            .any(|b| b == 0 || b.is_ascii_control() && b != b'\t')
+        {
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidCharacter,
+                "path contains null or control bytes",
+            ));
+        }
+        let expected_absolute =
+            self.raw.starts_with('/') || self.raw.starts_with('\\') || has_drive_prefix(&self.raw);
+        if expected_absolute != self.absolute {
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidCharacter,
+                "path absolute marker disagrees with raw form",
+            ));
+        }
+        // The normalized field must be reproducible from raw; if someone has
+        // deserialized a mismatched pair, reject it.
+        let rederived = normalize_lexical(&self.raw).ok_or_else(|| {
+            PathError::from_kind(PathErrorKind::Escape, "path escapes its own root via '..'")
+        })?;
+        if rederived != self.normalized {
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidValue,
+                "normalized field does not match raw path",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -513,6 +569,14 @@ impl NetworkResource {
     pub fn path(&self) -> &NormalizedPath {
         &self.path
     }
+
+    /// Re-validate every invariant of a possibly-deserialized endpoint.
+    pub(crate) fn validate_invariants(&self) -> Result<(), PathError> {
+        // Each typed member already validates on construction; we re-run the
+        // stored-form check on the path so that a tampered `raw` field (which
+        // does not independently re-validate during serde) is caught here too.
+        self.path.validate_invariants()
+    }
 }
 
 /// A command resource, preserving executable and arguments separately.
@@ -586,6 +650,50 @@ impl CommandResource {
     pub fn arguments(&self) -> &[String] {
         &self.arguments
     }
+
+    /// Re-validate every invariant of a possibly-deserialized command.
+    pub(crate) fn validate_invariants(&self) -> Result<(), PathError> {
+        if self.executable.is_empty() {
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidEndpoint,
+                "empty executable",
+            ));
+        }
+        if self.executable.len() > MAX_PATH_LEN {
+            return Err(PathError::from_kind(
+                PathErrorKind::Oversized,
+                "executable exceeds maximum length",
+            ));
+        }
+        if self
+            .executable
+            .bytes()
+            .any(|b| b == 0 || b.is_ascii_control() && b != b'\t')
+        {
+            return Err(PathError::from_kind(
+                PathErrorKind::InvalidCharacter,
+                "executable contains null or control bytes",
+            ));
+        }
+        for arg in &self.arguments {
+            if arg.len() > MAX_PATH_LEN {
+                return Err(PathError::from_kind(
+                    PathErrorKind::Oversized,
+                    "argument exceeds maximum length",
+                ));
+            }
+            if arg
+                .bytes()
+                .any(|b| b == 0 || b.is_ascii_control() && b != b'\t')
+            {
+                return Err(PathError::from_kind(
+                    PathErrorKind::InvalidCharacter,
+                    "argument contains null or control bytes",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A bounded metadata map with deterministic ordering (by key) for use in
@@ -594,9 +702,8 @@ impl CommandResource {
 pub struct RequestMetadata(BTreeMap<String, String>);
 
 impl RequestMetadata {
-    /// Maximum supported number of metadata entries. Defaults enforced by
-    /// `kavach-config` may be smaller; this is the absolute core cap.
-    pub const MAX_ENTRIES: usize = 64;
+    /// Maximum supported number of metadata entries.
+    pub const MAX_METADATA_ENTRIES: usize = 32;
 
     /// Construct an empty metadata map.
     pub fn new() -> Self {
@@ -623,7 +730,7 @@ impl RequestMetadata {
                 "metadata value exceeds maximum length",
             ));
         }
-        if !self.0.contains_key(&key) && self.0.len() + 1 > Self::MAX_ENTRIES {
+        if !self.0.contains_key(&key) && self.0.len() + 1 > Self::MAX_METADATA_ENTRIES {
             return Err(PathError::from_kind(
                 PathErrorKind::Oversized,
                 "metadata exceeds maximum entries",
@@ -651,6 +758,50 @@ impl RequestMetadata {
     /// Iterate entries in stable (key-sorted) order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
         self.0.iter()
+    }
+
+    /// Re-validate every invariant of a possibly-deserialized map.
+    ///
+    /// A map built by serde bypasses [`Self::insert`] and therefore the entry
+    /// count cap and key/value length limits. Depth validation rejects such
+    /// maps so the request envelope can remain fail-closed after a round-trip.
+    pub(crate) fn validate_invariants(&self) -> Result<(), PathError> {
+        if self.0.len() > Self::MAX_METADATA_ENTRIES {
+            return Err(PathError::from_kind(
+                PathErrorKind::Oversized,
+                "metadata exceeds maximum entries",
+            ));
+        }
+        for (key, value) in &self.0 {
+            if key.is_empty() || key.len() > 128 {
+                return Err(PathError::from_kind(
+                    PathErrorKind::Oversized,
+                    "metadata key invalid length",
+                ));
+            }
+            if key.bytes().any(|b| b == 0 || b.is_ascii_control()) {
+                return Err(PathError::from_kind(
+                    PathErrorKind::InvalidCharacter,
+                    "metadata key contains null or control bytes",
+                ));
+            }
+            if value.len() > MAX_PATH_LEN {
+                return Err(PathError::from_kind(
+                    PathErrorKind::Oversized,
+                    "metadata value exceeds maximum length",
+                ));
+            }
+            if value
+                .bytes()
+                .any(|b| b == 0 || b.is_ascii_control() && b != b'\t')
+            {
+                return Err(PathError::from_kind(
+                    PathErrorKind::InvalidCharacter,
+                    "metadata value contains null or control bytes",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -781,4 +932,52 @@ impl Resource {
             _ => None,
         }
     }
+
+    /// Re-validate every invariant of a possibly-deserialized resource.
+    ///
+    /// The secret and external-tool identifiers are stored as plain
+    /// [`String`] fields, so a serde round-trip could smuggle in an empty or
+    /// control-laden identifier. This check rejects those and re-runs the
+    /// stored-form validation for paths and commands.
+    pub(crate) fn validate_invariants(&self) -> Result<(), PathError> {
+        match self {
+            Self::File { path } | Self::Directory { path } => path.validate_invariants(),
+            Self::Command(cmd) => cmd.validate_invariants(),
+            Self::NetworkEndpoint(net) => net.validate_invariants(),
+            Self::Secret { identifier } | Self::ExternalTool { identifier } => {
+                validate_secret_or_tool_identifier(identifier)
+            }
+            // Unknown resources fail closed at the policy layer; the core
+            // invariant layer cannot know whether the caller intended them, so
+            // it accepts the variant and lets the engine deny by default.
+            Self::Unknown => Ok(()),
+        }
+    }
+}
+
+/// Bounds shared by [`Resource::Secret`] and [`Resource::ExternalTool`]
+/// identifiers: non-empty, no null bytes, no control bytes, bounded length.
+fn validate_secret_or_tool_identifier(identifier: &str) -> Result<(), PathError> {
+    if identifier.is_empty() {
+        return Err(PathError::from_kind(
+            PathErrorKind::InvalidEndpoint,
+            "empty identifier",
+        ));
+    }
+    if identifier.len() > MAX_IDENTIFIER_LEN {
+        return Err(PathError::from_kind(
+            PathErrorKind::Oversized,
+            "identifier exceeds maximum length",
+        ));
+    }
+    if identifier
+        .bytes()
+        .any(|b| b == 0 || b.is_ascii_control() && b != b'\t')
+    {
+        return Err(PathError::from_kind(
+            PathErrorKind::InvalidCharacter,
+            "identifier contains null or control bytes",
+        ));
+    }
+    Ok(())
 }
