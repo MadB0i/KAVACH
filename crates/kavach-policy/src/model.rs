@@ -9,7 +9,8 @@ use kavach_core::subject::TrustLevel;
 /// Used internally in the policy model. Converted to
 /// [`kavach_core::DecisionEffect`] when building the final
 /// [`kavach_core::AuthorizationDecision`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Effect {
     /// Explicitly allow the operation.
     Allow,
@@ -35,7 +36,8 @@ impl Effect {
 /// Only [`Deny`](DefaultEffect::Deny) and [`RequireApproval`](DefaultEffect::RequireApproval)
 /// are permitted. A plain [`Allow`](Effect::Allow) default is rejected at the
 /// type level to enforce a fail-closed posture by construction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DefaultEffect {
     /// Deny the request. The standard fail-closed default.
     Deny,

@@ -25,5 +25,10 @@ pub mod engine;
 /// Policy data model: [`Policy`], [`Rule`], [`Effect`], [`RuleConditions`].
 pub mod model;
 
+/// TOML policy document parsing and file loading.
+pub mod io;
+
 pub use engine::PolicyEngine;
+pub use io::{load_policy_from_file, load_policy_from_str, PolicyLoadError};
+pub use io::MAX_POLICY_FILE_SIZE;
 pub use model::{DefaultEffect, Effect, Policy, PolicyValidationError, Rule, RuleConditions};
