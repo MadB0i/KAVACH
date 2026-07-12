@@ -5,7 +5,32 @@ use kavach_core::ids::RuleId;
 use kavach_core::request::ToolRequest;
 use kavach_core::{AuthorizationDecision, DecisionEffect, ReasonCode};
 
-use crate::model::{DefaultEffect, Effect, Policy, PolicyValidationError, trust_level_rank};
+use crate::model::{
+    DefaultEffect, Effect, Policy, PolicyValidationError, RuleConditions, trust_level_rank,
+};
+
+// ---------------------------------------------------------------------------
+// Compiled types — private; pre-compile glob patterns once at construction.
+// ---------------------------------------------------------------------------
+
+/// A rule with a pre-compiled path glob matcher.
+#[derive(Debug, Clone)]
+struct CompiledRule {
+    rule: crate::model::Rule,
+    /// Compiled `GlobSet` when `path_globs` is `Some(non_empty)`, else `None`.
+    path_matcher: Option<globset::GlobSet>,
+}
+
+/// A policy whose rules have been validated and whose path globs are compiled.
+#[derive(Debug, Clone)]
+struct CompiledPolicy {
+    default_effect: DefaultEffect,
+    rules: Vec<CompiledRule>,
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /// In-memory policy evaluator with deterministic precedence.
 ///
@@ -17,19 +42,26 @@ use crate::model::{DefaultEffect, Effect, Policy, PolicyValidationError, trust_l
 ///
 /// Only rule IDs from the winning precedence group appear in the output
 /// [`AuthorizationDecision`], sorted lexicographically.
+///
+/// Path-glob patterns are compiled during [`PolicyEngine::new`]; evaluation
+/// never calls `Glob::new`, `GlobSetBuilder::build`, or any compilation
+/// function.
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
-    policies: Vec<Policy>,
+    compiled: Vec<CompiledPolicy>,
 }
 
 impl PolicyEngine {
     /// Create a new engine from an ordered list of policies.
     ///
-    /// Returns an error if any policy contains duplicate rule IDs or a rule
-    /// with empty conditions (no active matchers).
+    /// Returns an error if any policy contains duplicate rule IDs, a rule
+    /// with empty conditions, or invalid path-glob patterns.
     ///
     /// Policies are evaluated in the order given; rules within each policy are
     /// evaluated in their declaration order.
+    ///
+    /// Path-glob patterns are validated and compiled into a [`globset::GlobSet`]
+    /// once at construction time.
     pub fn new(policies: Vec<Policy>) -> Result<Self, PolicyValidationError> {
         // Validate within each policy.
         for policy in &policies {
@@ -44,7 +76,23 @@ impl PolicyEngine {
                 }
             }
         }
-        Ok(Self { policies })
+        // Compile.
+        let mut compiled = Vec::with_capacity(policies.len());
+        for policy in &policies {
+            let mut rules = Vec::with_capacity(policy.rules.len());
+            for rule in &policy.rules {
+                let path_matcher = build_path_matcher(&rule.conditions, &rule.id)?;
+                rules.push(CompiledRule {
+                    rule: rule.clone(),
+                    path_matcher,
+                });
+            }
+            compiled.push(CompiledPolicy {
+                default_effect: policy.default_effect,
+                rules,
+            });
+        }
+        Ok(Self { compiled })
     }
 
     /// Evaluate a [`ToolRequest`] against all loaded policies.
@@ -83,13 +131,13 @@ impl PolicyEngine {
         let mut approval_ids: BTreeSet<RuleId> = BTreeSet::new();
         let mut allow_ids: BTreeSet<RuleId> = BTreeSet::new();
 
-        for policy in &self.policies {
-            for rule in &policy.rules {
-                if rule_matches(rule, request) {
-                    match rule.effect {
-                        Effect::Deny => deny_ids.insert(rule.id.clone()),
-                        Effect::RequireApproval => approval_ids.insert(rule.id.clone()),
-                        Effect::Allow => allow_ids.insert(rule.id.clone()),
+        for cp in &self.compiled {
+            for cr in &cp.rules {
+                if rule_matches(cr, request) {
+                    match cr.rule.effect {
+                        Effect::Deny => deny_ids.insert(cr.rule.id.clone()),
+                        Effect::RequireApproval => approval_ids.insert(cr.rule.id.clone()),
+                        Effect::Allow => allow_ids.insert(cr.rule.id.clone()),
                     };
                 }
             }
@@ -136,7 +184,7 @@ impl PolicyEngine {
         } else {
             // No rule matched — policy default (Allow is impossible at type level).
             let default = self
-                .policies
+                .compiled
                 .first()
                 .map(|p| p.default_effect)
                 .unwrap_or(DefaultEffect::Deny);
@@ -157,6 +205,49 @@ impl PolicyEngine {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helper — compile path matcher
+// ---------------------------------------------------------------------------
+
+/// Build a compiled [`globset::GlobSet`] from validated path-glob patterns.
+///
+/// Returns `None` when no path restriction is configured.
+///
+/// Configuration (per requirement):
+/// - `/` is the internal separator
+/// - `*` must not cross path separators (via `literal_separator(true)`)
+/// - `**` may cross separators
+/// - matching is case-sensitive
+/// - literal separators are required
+/// - complete normalized path matching
+/// - no filesystem access, canonicalization, or symlink resolution
+fn build_path_matcher(
+    cond: &RuleConditions,
+    rule_id: &RuleId,
+) -> Result<Option<globset::GlobSet>, PolicyValidationError> {
+    let globs = match &cond.path_globs {
+        None => return Ok(None),
+        Some(v) => v,
+    };
+    if globs.is_empty() {
+        return Ok(None);
+    }
+    let mut builder = globset::GlobSetBuilder::new();
+    for (i, pat) in globs.iter().enumerate() {
+        let glob = globset::GlobBuilder::new(pat)
+            .literal_separator(true)
+            .case_insensitive(false)
+            .backslash_escape(true)
+            .build()
+            .map_err(|_| PolicyValidationError::InvalidGlobPattern(rule_id.clone(), i))?;
+        builder.add(glob);
+    }
+    builder
+        .build()
+        .map(Some)
+        .map_err(|_| PolicyValidationError::GlobCompileConflict(rule_id.clone()))
+}
+
 /// Join rule IDs into a comma-separated string for human explanation.
 fn join_ids(ids: &[RuleId]) -> String {
     ids.iter()
@@ -165,9 +256,12 @@ fn join_ids(ids: &[RuleId]) -> String {
         .join(", ")
 }
 
-/// Check whether a rule's conditions match the given request.
-fn rule_matches(rule: &crate::model::Rule, request: &ToolRequest) -> bool {
-    let cond = &rule.conditions;
+/// Check whether a compiled rule's conditions match the given request.
+///
+/// Path glob checking uses the already-compiled [`globset::GlobSet`] stored in
+/// [`CompiledRule::path_matcher`]; no new compilation occurs.
+fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
+    let cond = &cr.rule.conditions;
 
     // --- Operation check ---
     if !cond.operations.is_empty() {
@@ -229,6 +323,18 @@ fn rule_matches(rule: &crate::model::Rule, request: &ToolRequest) -> bool {
         }
     }
 
+    // --- Path glob check — uses pre-compiled GlobSet ---
+    if let Some(ref matcher) = cr.path_matcher {
+        let resource_path = match request.resource.path() {
+            Some(p) => p.normalized(),
+            // Non-file/directory resources never match when a path matcher is configured.
+            None => return false,
+        };
+        if !matcher.is_match(resource_path) {
+            return false;
+        }
+    }
+
     true
 }
 
@@ -242,7 +348,10 @@ mod tests {
     use kavach_core::resource::Resource;
     use kavach_core::subject::Capability;
 
-    use crate::model::{DefaultEffect, Effect as PolicyEffect, Policy, Rule, RuleConditions};
+    use crate::model::{
+        DefaultEffect, Effect as PolicyEffect, MAX_PATH_GLOB_LENGTH, MAX_PATH_GLOB_PATTERNS,
+        Policy, Rule, RuleConditions,
+    };
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -999,6 +1108,700 @@ mod tests {
                 .effect,
             DecisionEffect::Deny
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Path glob matching
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn matches_by_path_glob() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-src-rs").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    path_globs: Some(vec!["**/src/**/*.rs".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // Matching path.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/workspace/src/foo/bar.rs").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        // Non-matching path.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/workspace/README.md").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+        assert_eq!(engine.evaluate(&req).reason, ReasonCode::KavachDenyDefault);
+    }
+
+    #[test]
+    fn path_glob_matches_any_pattern_in_list() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-known").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["**/Cargo.toml".into(), "**/src/**/*.rs".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/workspace/Cargo.toml").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/workspace/src/lib.rs").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/workspace/README.md").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn path_glob_non_file_resource_no_match() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-any-file").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["*".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // Command resources have no path → no match.
+        let req = ToolRequest::new(
+            RequestId::new("req-1").unwrap(),
+            make_subject(),
+            Operation::CommandExecute,
+            kavach_core::resource::Resource::Command(
+                kavach_core::resource::CommandResource::new("cat", vec![]).unwrap(),
+            ),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn path_glob_empty_skips_check() {
+        // When path_globs is empty, it should not restrict matching.
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-all-read").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request(make_subject());
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    // -----------------------------------------------------------------------
+    // Explicit glob semantic tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn glob_star_matches_one_segment() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-txt").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["/*.txt".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // `*` matches one segment at root level.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/foo.txt").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        // `*` does not match nested — /sub/foo.txt won't match /*.txt.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/sub/foo.txt").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn glob_star_does_not_cross_separators() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-src").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["/src/*.rs".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // `*` matches only within /src/.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/src/lib.rs").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        // `*` does not match nested: /src/sub/lib.rs.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/src/sub/lib.rs").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn glob_starstar_matches_nested() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-all-rs").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["/src/**/*.rs".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // `**` matches zero or more directories — direct child.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/src/lib.rs").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        // `**` matches deep nesting.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/src/a/b/c/lib.rs").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        // Does not match outside /src/.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/other/lib.rs").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn glob_windows_backslash_normalized() {
+        // NormalizedPath converts backslashes to forward slashes.
+        // The normalized form of `C:\workspace\foo.txt` is `C:/workspace/foo.txt`.
+        let path = kavach_core::resource::NormalizedPath::new("C:\\workspace\\foo.txt").unwrap();
+        let normalized = path.normalized();
+        assert_eq!(normalized, "C:/workspace/foo.txt");
+
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-fs").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["C:/workspace/*".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            kavach_core::resource::Resource::File { path },
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    // -----------------------------------------------------------------------
+    // Resource-type tests for path globs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn glob_directory_resource_matches() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-dir").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["/workspace/project/*".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::DirectoryList,
+            Resource::directory("/workspace/project/subdir").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    #[test]
+    fn glob_network_resource_never_matches() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-net").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["*".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        use kavach_core::resource::{NetworkHost, NetworkResource, NetworkScheme};
+        let net = Resource::NetworkEndpoint(
+            NetworkResource::new(
+                NetworkScheme::new("https").unwrap(),
+                NetworkHost::new("example.com").unwrap(),
+                None,
+                "/",
+            )
+            .unwrap(),
+        );
+        let req = make_request_with(
+            make_subject(),
+            Operation::NetworkRequest,
+            net,
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn glob_secret_external_unknown_never_match() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-any").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["*".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // Secret resource.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::Secret {
+                identifier: "my-key".into(),
+            },
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+
+        // ExternalTool resource.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::ExternalTool {
+                identifier: "kubectl".into(),
+            },
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+
+        // Unknown resource.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::Unknown,
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn glob_and_operation_use_and_semantics() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("and-rule").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_write".into()],
+                    path_globs: Some(vec!["**/Cargo.toml".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // Both match: file_write + Cargo.toml → allow.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileWrite,
+            Resource::file("/workspace/Cargo.toml").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        // Operation matches but path does not → deny.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileWrite,
+            Resource::file("/workspace/README.md").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+
+        // Path matches but operation does not → deny.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/workspace/Cargo.toml").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn glob_precedence_deny_over_allow_with_paths() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![
+                Rule {
+                    id: RuleId::new("allow-all").unwrap(),
+                    description: "".into(),
+                    effect: PolicyEffect::Allow,
+                    conditions: RuleConditions {
+                        path_globs: Some(vec!["**".into()]),
+                        ..Default::default()
+                    },
+                },
+                Rule {
+                    id: RuleId::new("deny-toml").unwrap(),
+                    description: "".into(),
+                    effect: PolicyEffect::Deny,
+                    conditions: RuleConditions {
+                        path_globs: Some(vec!["**/Cargo.toml".into()]),
+                        ..Default::default()
+                    },
+                },
+            ],
+        )])
+        .unwrap();
+
+        // Deny takes precedence over Allow.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileWrite,
+            Resource::file("/workspace/Cargo.toml").unwrap(),
+            make_context(),
+        );
+        let decision = engine.evaluate(&req);
+        assert_eq!(decision.effect, DecisionEffect::Deny);
+        assert!(
+            decision
+                .matched_rule_ids
+                .contains(&RuleId::new("deny-toml").unwrap())
+        );
+        assert!(
+            !decision
+                .matched_rule_ids
+                .contains(&RuleId::new("allow-all").unwrap())
+        );
+
+        // Allow still works for non-deny paths.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileWrite,
+            Resource::file("/workspace/src/lib.rs").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    // -----------------------------------------------------------------------
+    // Path glob validation — programmatic construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reject_empty_path_globs_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    path_globs: Some(vec![]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::EmptyPathGlobs(id)) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            _ => panic!("expected EmptyPathGlobs"),
+        }
+    }
+
+    #[test]
+    fn reject_too_many_path_globs_programmatic() {
+        let globs: Vec<String> = (0..=MAX_PATH_GLOB_PATTERNS)
+            .map(|i| format!("pat-{}", i))
+            .collect();
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    path_globs: Some(globs),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::TooManyPathGlobs(id, count)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(count, MAX_PATH_GLOB_PATTERNS + 1);
+            }
+            _ => panic!("expected TooManyPathGlobs"),
+        }
+    }
+
+    #[test]
+    fn reject_empty_glob_pattern_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    path_globs: Some(vec!["".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::EmptyGlobPattern(id, idx)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            _ => panic!("expected EmptyGlobPattern"),
+        }
+    }
+
+    #[test]
+    fn reject_glob_pattern_too_long_programmatic() {
+        let long = "a".repeat(MAX_PATH_GLOB_LENGTH + 1);
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    path_globs: Some(vec![long]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::GlobPatternTooLong(id, idx, len)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+                assert_eq!(len, MAX_PATH_GLOB_LENGTH + 1);
+            }
+            _ => panic!("expected GlobPatternTooLong"),
+        }
+    }
+
+    #[test]
+    fn reject_duplicate_glob_pattern_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    path_globs: Some(vec!["src/**/*.rs".into(), "src/**/*.rs".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::DuplicateGlobPattern(id)) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            _ => panic!("expected DuplicateGlobPattern"),
+        }
+    }
+
+    #[test]
+    fn reject_glob_pattern_null_byte() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    path_globs: Some(vec!["src/**/*.rs\0".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::InvalidGlobPattern(id, idx)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            _ => panic!("expected InvalidGlobPattern"),
+        }
+    }
+
+    #[test]
+    fn reject_glob_pattern_control_char() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    path_globs: Some(vec!["src/**/*.rs\n".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::InvalidGlobPattern(id, idx)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            _ => panic!("expected InvalidGlobPattern"),
+        }
+    }
+
+    #[test]
+    fn reject_invalid_glob_syntax_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    path_globs: Some(vec!["[invalid".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::InvalidGlobPattern(id, idx)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            _ => panic!("expected InvalidGlobPattern"),
+        }
     }
 
     // -----------------------------------------------------------------------

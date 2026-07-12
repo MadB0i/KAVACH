@@ -4,6 +4,11 @@ use kavach_core::ids::{PolicyId, RuleId};
 use kavach_core::resource::ResourceKind;
 use kavach_core::subject::TrustLevel;
 
+/// Maximum number of path glob patterns allowed per rule.
+pub const MAX_PATH_GLOB_PATTERNS: usize = 32;
+/// Maximum length (in bytes) of a single path glob pattern.
+pub const MAX_PATH_GLOB_LENGTH: usize = 1024;
+
 /// Authorization effect produced by a matching rule.
 ///
 /// Used internally in the policy model. Converted to
@@ -72,6 +77,27 @@ pub enum PolicyValidationError {
     /// An ordinary rule has no active matchers (all condition fields empty).
     #[error("rule {0} has no active conditions; empty conditions are not allowed")]
     EmptyConditions(RuleId),
+    /// `path_globs` was explicitly set to an empty list.
+    #[error("rule {0}: path_globs present but empty; either set patterns or omit path_globs")]
+    EmptyPathGlobs(RuleId),
+    /// More than [`MAX_PATH_GLOB_PATTERNS`] patterns.
+    #[error("rule {rule}: too many path_glob patterns ({count}); maximum is {max}", rule = .0, count = .1, max = MAX_PATH_GLOB_PATTERNS)]
+    TooManyPathGlobs(RuleId, usize),
+    /// A glob pattern string is empty.
+    #[error("rule {0}: empty glob pattern at index {1}")]
+    EmptyGlobPattern(RuleId, usize),
+    /// A glob pattern exceeds [`MAX_PATH_GLOB_LENGTH`].
+    #[error("rule {rule}: glob pattern at index {idx} is {len} bytes; maximum is {max}", rule = .0, idx = .1, len = .2, max = MAX_PATH_GLOB_LENGTH)]
+    GlobPatternTooLong(RuleId, usize, usize),
+    /// Duplicate glob pattern string.
+    #[error("rule {0}: duplicate glob pattern")]
+    DuplicateGlobPattern(RuleId),
+    /// Null byte, control character, or invalid glob syntax.
+    #[error("rule {0}: invalid glob pattern at index {1}")]
+    InvalidGlobPattern(RuleId, usize),
+    /// Compilation of validated glob patterns into a GlobSet failed (e.g. pattern conflict).
+    #[error("rule {0}: glob patterns cannot be compiled into a single matcher")]
+    GlobCompileConflict(RuleId),
 }
 
 /// Conditions that must all be satisfied for a rule to match a request.
@@ -97,11 +123,21 @@ pub struct RuleConditions {
     pub required_capabilities: Vec<String>,
     /// If set, the declared intent must start with this prefix.
     pub intent_prefix: Option<String>,
+    /// Glob patterns for the resource path (e.g. `"src/**/*.rs"`).
+    ///
+    /// Only meaningful for file and directory resources. `None` means no path
+    /// restriction. `Some(vec![])` is rejected during validation as
+    /// [`EmptyPathGlobs`](PolicyValidationError::EmptyPathGlobs).
+    pub path_globs: Option<Vec<String>>,
 }
 
 impl RuleConditions {
     /// Returns `true` when every condition field is at its default (empty or
     /// `None`), meaning the rule would match any request — which is rejected.
+    ///
+    /// Note: `path_globs = Some(vec![])` is **not** considered empty here
+    /// (it is non-default); it is instead rejected separately by
+    /// [`validate_path_globs`](Self::validate_path_globs).
     pub fn is_empty(&self) -> bool {
         self.operations.is_empty()
             && self.resource_kinds.is_empty()
@@ -109,6 +145,58 @@ impl RuleConditions {
             && self.min_trust_level.is_none()
             && self.required_capabilities.is_empty()
             && self.intent_prefix.is_none()
+            && self.path_globs.is_none()
+    }
+
+    /// Validate `path_globs` patterns for this rule.
+    ///
+    /// Checks, in order:
+    /// 1. `Some(vec![])` → [`EmptyPathGlobs`](PolicyValidationError::EmptyPathGlobs)
+    /// 2. more than [`MAX_PATH_GLOB_PATTERNS`] → [`TooManyPathGlobs`](PolicyValidationError::TooManyPathGlobs)
+    /// 3. empty pattern string → [`EmptyGlobPattern`](PolicyValidationError::EmptyGlobPattern)
+    /// 4. pattern exceeds [`MAX_PATH_GLOB_LENGTH`] → [`GlobPatternTooLong`](PolicyValidationError::GlobPatternTooLong)
+    /// 5. null byte or control character → [`InvalidGlobPattern`](PolicyValidationError::InvalidGlobPattern)
+    /// 6. duplicate pattern → [`DuplicateGlobPattern`](PolicyValidationError::DuplicateGlobPattern)
+    /// 7. invalid glob syntax → [`InvalidGlobPattern`](PolicyValidationError::InvalidGlobPattern)
+    pub fn validate_path_globs(&self, rule_id: &RuleId) -> Result<(), PolicyValidationError> {
+        let globs = match &self.path_globs {
+            None => return Ok(()),
+            Some(v) => v,
+        };
+        if globs.is_empty() {
+            return Err(PolicyValidationError::EmptyPathGlobs(rule_id.clone()));
+        }
+        if globs.len() > MAX_PATH_GLOB_PATTERNS {
+            return Err(PolicyValidationError::TooManyPathGlobs(
+                rule_id.clone(),
+                globs.len(),
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for (i, pat) in globs.iter().enumerate() {
+            if pat.is_empty() {
+                return Err(PolicyValidationError::EmptyGlobPattern(rule_id.clone(), i));
+            }
+            if pat.len() > MAX_PATH_GLOB_LENGTH {
+                return Err(PolicyValidationError::GlobPatternTooLong(
+                    rule_id.clone(),
+                    i,
+                    pat.len(),
+                ));
+            }
+            if pat.contains('\u{0}') || pat.bytes().any(|b| b.is_ascii_control() && b != b'\t') {
+                return Err(PolicyValidationError::InvalidGlobPattern(
+                    rule_id.clone(),
+                    i,
+                ));
+            }
+            if !seen.insert(pat.clone()) {
+                return Err(PolicyValidationError::DuplicateGlobPattern(rule_id.clone()));
+            }
+            globset::Glob::new(pat)
+                .map_err(|_| PolicyValidationError::InvalidGlobPattern(rule_id.clone(), i))?;
+        }
+        Ok(())
     }
 }
 
@@ -149,14 +237,15 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// Validate internal consistency: no duplicate rule IDs and no empty
-    /// conditions on any ordinary rule.
+    /// Validate internal consistency: no duplicate rule IDs, no empty
+    /// conditions on any ordinary rule, and valid `path_globs`.
     pub fn validate(&self) -> Result<(), PolicyValidationError> {
         let mut seen = BTreeSet::new();
         for rule in &self.rules {
             if rule.conditions.is_empty() {
                 return Err(PolicyValidationError::EmptyConditions(rule.id.clone()));
             }
+            rule.conditions.validate_path_globs(&rule.id)?;
             if !seen.insert(rule.id.clone()) {
                 return Err(PolicyValidationError::DuplicateRuleId(rule.id.clone()));
             }

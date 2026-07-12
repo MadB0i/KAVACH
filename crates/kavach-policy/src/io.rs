@@ -78,6 +78,7 @@ struct TomlRuleConditions {
     #[serde(default)]
     required_capabilities: Vec<String>,
     intent_prefix: Option<String>,
+    path_globs: Option<Vec<String>>,
 }
 
 /// Load a [Policy] from a TOML file at the given path.
@@ -111,7 +112,9 @@ pub fn load_policy_from_str(toml_str: &str) -> Result<Policy, PolicyLoadError> {
     let doc: TomlDocument =
         toml::from_str(toml_str).map_err(|e| PolicyLoadError::Parse(e.to_string()))?;
     if doc.schema_version != 1 {
-        return Err(PolicyLoadError::UnsupportedSchemaVersion(doc.schema_version));
+        return Err(PolicyLoadError::UnsupportedSchemaVersion(
+            doc.schema_version,
+        ));
     }
     convert(doc)
 }
@@ -131,6 +134,7 @@ fn convert(doc: TomlDocument) -> Result<Policy, PolicyLoadError> {
                 min_trust_level: c.min_trust_level,
                 required_capabilities: c.required_capabilities.clone(),
                 intent_prefix: c.intent_prefix.clone(),
+                path_globs: c.path_globs.clone(),
             },
             None => RuleConditions::default(),
         };
@@ -167,6 +171,7 @@ fn convert(doc: TomlDocument) -> Result<Policy, PolicyLoadError> {
 mod tests {
     use super::*;
     use crate::model::Effect;
+    use crate::model::{MAX_PATH_GLOB_LENGTH, MAX_PATH_GLOB_PATTERNS};
 
     #[test]
     fn parse_minimal_policy() {
@@ -548,7 +553,10 @@ operations = ["file_read"]
 "#;
         match load_policy_from_str(toml) {
             Err(PolicyLoadError::Parse(_)) => {}
-            other => panic!("expected Parse error for missing schema_version, got {:?}", other),
+            other => panic!(
+                "expected Parse error for missing schema_version, got {:?}",
+                other
+            ),
         }
     }
 
@@ -581,7 +589,10 @@ unknown_field = "boom"
 "#;
         match load_policy_from_str(toml) {
             Err(PolicyLoadError::Parse(_)) => {}
-            other => panic!("expected Parse error for unknown policy field, got {:?}", other),
+            other => panic!(
+                "expected Parse error for unknown policy field, got {:?}",
+                other
+            ),
         }
     }
 
@@ -604,7 +615,10 @@ operations = ["file_read"]
 "#;
         match load_policy_from_str(toml) {
             Err(PolicyLoadError::Parse(_)) => {}
-            other => panic!("expected Parse error for unknown rule field, got {:?}", other),
+            other => panic!(
+                "expected Parse error for unknown rule field, got {:?}",
+                other
+            ),
         }
     }
 
@@ -627,7 +641,246 @@ unknown_cond = "bad"
 "#;
         match load_policy_from_str(toml) {
             Err(PolicyLoadError::Parse(_)) => {}
-            other => panic!("expected Parse error for unknown conditions field, got {:?}", other),
+            other => panic!(
+                "expected Parse error for unknown conditions field, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn parse_path_globs() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "glob-policy"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["file_read"]
+path_globs = ["src/**/*.rs", "Cargo.toml"]
+"#;
+        let policy = load_policy_from_str(toml).unwrap();
+        assert_eq!(
+            policy.rules[0].conditions.path_globs,
+            Some(vec!["src/**/*.rs".to_string(), "Cargo.toml".to_string()])
+        );
+    }
+
+    #[test]
+    fn reject_invalid_glob_pattern() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "bad-glob"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["file_read"]
+path_globs = ["[invalid"]
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::InvalidGlobPattern(
+                id,
+                idx,
+            ))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            other => panic!("expected InvalidGlobPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_empty_path_globs_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["file_read"]
+path_globs = []
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::EmptyPathGlobs(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected EmptyPathGlobs, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_too_many_path_globs_toml() {
+        let mut toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["file_read"]
+path_globs = ["#
+            .to_string();
+        for i in 1..=(MAX_PATH_GLOB_PATTERNS + 1) {
+            if i > 1 {
+                toml.push_str(", ");
+            }
+            toml.push_str(&format!("\"pat-{}\"", i));
+        }
+        toml.push_str("]\n");
+        match load_policy_from_str(&toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::TooManyPathGlobs(
+                id,
+                count,
+            ))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(count, MAX_PATH_GLOB_PATTERNS + 1);
+            }
+            other => panic!("expected TooManyPathGlobs, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_empty_glob_pattern_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["file_read"]
+path_globs = [""]
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::EmptyGlobPattern(id, idx))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            other => panic!("expected EmptyGlobPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_glob_pattern_too_long_toml() {
+        let long = "a".repeat(MAX_PATH_GLOB_LENGTH + 1);
+        let toml = format!(
+            r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["file_read"]
+path_globs = ["{long}"]
+"#
+        );
+        match load_policy_from_str(&toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::GlobPatternTooLong(
+                id,
+                idx,
+                len,
+            ))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+                assert_eq!(len, MAX_PATH_GLOB_LENGTH + 1);
+            }
+            other => panic!("expected GlobPatternTooLong, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_duplicate_glob_pattern_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["file_read"]
+path_globs = ["src/**/*.rs", "src/**/*.rs"]
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::DuplicateGlobPattern(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected DuplicateGlobPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_path_glob_null_byte_toml() {
+        // Inject a null byte programmatically; TOML itself does not allow \0.
+        let toml = format!(
+            "schema_version = 1\n\n[policy]\nid = \"test\"\ndefault_effect = \"deny\"\n\n[[rules]]\nid = \"r1\"\neffect = \"allow\"\n\n[rules.conditions]\noperations = [\"file_read\"]\npath_globs = [\"{}\"]\n",
+            "src/**/*.rs\0"
+        );
+        match load_policy_from_str(&toml) {
+            // The TOML spec forbids null bytes in strings, so serde may
+            // reject it as a Parse error before our validation runs.
+            Err(PolicyLoadError::Parse(_)) => {}
+            Err(PolicyLoadError::Validation(PolicyValidationError::InvalidGlobPattern(
+                id,
+                idx,
+            ))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            other => panic!("expected Parse or InvalidGlobPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_path_glob_control_char_toml() {
+        let toml = "schema_version = 1\n\n[policy]\nid = \"test\"\ndefault_effect = \"deny\"\n\n[[rules]]\nid = \"r1\"\neffect = \"allow\"\n\n[rules.conditions]\noperations = [\"file_read\"]\npath_globs = [\"src/**/*.rs\\n\"]\n";
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::InvalidGlobPattern(
+                id,
+                idx,
+            ))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            other => panic!("expected InvalidGlobPattern, got {:?}", other),
         }
     }
 
