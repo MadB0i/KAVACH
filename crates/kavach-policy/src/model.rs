@@ -9,6 +9,11 @@ pub const MAX_PATH_GLOB_PATTERNS: usize = 32;
 /// Maximum length (in bytes) of a single path glob pattern.
 pub const MAX_PATH_GLOB_LENGTH: usize = 1024;
 
+/// Maximum number of executable patterns allowed per rule.
+pub const MAX_EXECUTABLE_PATTERNS: usize = 64;
+/// Maximum length (in bytes) of a single executable pattern.
+pub const MAX_EXECUTABLE_LENGTH: usize = 256;
+
 /// Authorization effect produced by a matching rule.
 ///
 /// Used internally in the policy model. Converted to
@@ -98,6 +103,35 @@ pub enum PolicyValidationError {
     /// Compilation of validated glob patterns into a GlobSet failed (e.g. pattern conflict).
     #[error("rule {0}: glob patterns cannot be compiled into a single matcher")]
     GlobCompileConflict(RuleId),
+    /// `executables` was explicitly set to an empty list.
+    #[error("rule {0}: executables present but empty; either list executables or omit")]
+    EmptyExecutables(RuleId),
+    /// More than [`MAX_EXECUTABLE_PATTERNS`] patterns.
+    #[error(
+        "rule {rule}: too many executables ({count}); maximum is {max}",
+        rule = .0,
+        count = .1,
+        max = MAX_EXECUTABLE_PATTERNS
+    )]
+    TooManyExecutables(RuleId, usize),
+    /// An executable string is empty.
+    #[error("rule {0}: empty executable at index {1}")]
+    EmptyExecutable(RuleId, usize),
+    /// An executable exceeds [`MAX_EXECUTABLE_LENGTH`].
+    #[error(
+        "rule {rule}: executable at index {idx} is {len} bytes; maximum is {max}",
+        rule = .0,
+        idx = .1,
+        len = .2,
+        max = MAX_EXECUTABLE_LENGTH
+    )]
+    ExecutableTooLong(RuleId, usize, usize),
+    /// Duplicate executable string.
+    #[error("rule {0}: duplicate executable")]
+    DuplicateExecutable(RuleId),
+    /// An executable contains null bytes or control characters.
+    #[error("rule {0}: invalid executable at index {1}")]
+    InvalidExecutable(RuleId, usize),
 }
 
 /// Conditions that must all be satisfied for a rule to match a request.
@@ -129,6 +163,12 @@ pub struct RuleConditions {
     /// restriction. `Some(vec![])` is rejected during validation as
     /// [`EmptyPathGlobs`](PolicyValidationError::EmptyPathGlobs).
     pub path_globs: Option<Vec<String>>,
+    /// Executable names or paths that this rule applies to.
+    ///
+    /// Only meaningful for command resources. `None` means no executable
+    /// restriction. `Some(vec![])` is rejected during validation as
+    /// [`EmptyExecutables`](PolicyValidationError::EmptyExecutables).
+    pub executables: Option<Vec<String>>,
 }
 
 impl RuleConditions {
@@ -146,6 +186,7 @@ impl RuleConditions {
             && self.required_capabilities.is_empty()
             && self.intent_prefix.is_none()
             && self.path_globs.is_none()
+            && self.executables.is_none()
     }
 
     /// Validate `path_globs` patterns for this rule.
@@ -198,6 +239,51 @@ impl RuleConditions {
         }
         Ok(())
     }
+
+    /// Validate `executables` patterns for this rule.
+    ///
+    /// Checks, in order:
+    /// 1. `Some(vec![])` → [`EmptyExecutables`](PolicyValidationError::EmptyExecutables)
+    /// 2. more than [`MAX_EXECUTABLE_PATTERNS`] → [`TooManyExecutables`](PolicyValidationError::TooManyExecutables)
+    /// 3. empty string → [`EmptyExecutable`](PolicyValidationError::EmptyExecutable)
+    /// 4. exceeds [`MAX_EXECUTABLE_LENGTH`] → [`ExecutableTooLong`](PolicyValidationError::ExecutableTooLong)
+    /// 5. null byte or control character → [`InvalidExecutable`](PolicyValidationError::InvalidExecutable)
+    /// 6. duplicate → [`DuplicateExecutable`](PolicyValidationError::DuplicateExecutable)
+    pub fn validate_executables(&self, rule_id: &RuleId) -> Result<(), PolicyValidationError> {
+        let exes = match &self.executables {
+            None => return Ok(()),
+            Some(v) => v,
+        };
+        if exes.is_empty() {
+            return Err(PolicyValidationError::EmptyExecutables(rule_id.clone()));
+        }
+        if exes.len() > MAX_EXECUTABLE_PATTERNS {
+            return Err(PolicyValidationError::TooManyExecutables(
+                rule_id.clone(),
+                exes.len(),
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for (i, exe) in exes.iter().enumerate() {
+            if exe.is_empty() {
+                return Err(PolicyValidationError::EmptyExecutable(rule_id.clone(), i));
+            }
+            if exe.len() > MAX_EXECUTABLE_LENGTH {
+                return Err(PolicyValidationError::ExecutableTooLong(
+                    rule_id.clone(),
+                    i,
+                    exe.len(),
+                ));
+            }
+            if exe.contains('\u{0}') || exe.bytes().any(|b| b.is_ascii_control() && b != b'\t') {
+                return Err(PolicyValidationError::InvalidExecutable(rule_id.clone(), i));
+            }
+            if !seen.insert(exe.clone()) {
+                return Err(PolicyValidationError::DuplicateExecutable(rule_id.clone()));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A single policy rule with deterministic matching conditions.
@@ -246,6 +332,7 @@ impl Policy {
                 return Err(PolicyValidationError::EmptyConditions(rule.id.clone()));
             }
             rule.conditions.validate_path_globs(&rule.id)?;
+            rule.conditions.validate_executables(&rule.id)?;
             if !seen.insert(rule.id.clone()) {
                 return Err(PolicyValidationError::DuplicateRuleId(rule.id.clone()));
             }

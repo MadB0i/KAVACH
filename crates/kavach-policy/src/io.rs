@@ -79,6 +79,7 @@ struct TomlRuleConditions {
     required_capabilities: Vec<String>,
     intent_prefix: Option<String>,
     path_globs: Option<Vec<String>>,
+    executables: Option<Vec<String>>,
 }
 
 /// Load a [Policy] from a TOML file at the given path.
@@ -135,6 +136,7 @@ fn convert(doc: TomlDocument) -> Result<Policy, PolicyLoadError> {
                 required_capabilities: c.required_capabilities.clone(),
                 intent_prefix: c.intent_prefix.clone(),
                 path_globs: c.path_globs.clone(),
+                executables: c.executables.clone(),
             },
             None => RuleConditions::default(),
         };
@@ -171,7 +173,10 @@ fn convert(doc: TomlDocument) -> Result<Policy, PolicyLoadError> {
 mod tests {
     use super::*;
     use crate::model::Effect;
-    use crate::model::{MAX_PATH_GLOB_LENGTH, MAX_PATH_GLOB_PATTERNS};
+    use crate::model::{
+        MAX_EXECUTABLE_LENGTH, MAX_EXECUTABLE_PATTERNS, MAX_PATH_GLOB_LENGTH,
+        MAX_PATH_GLOB_PATTERNS,
+    };
 
     #[test]
     fn parse_minimal_policy() {
@@ -902,5 +907,203 @@ path_globs = ["src/**/*.rs", "src/**/*.rs"]
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_executables() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "exec-policy"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["command_execute"]
+executables = ["kubectl", "docker"]
+"#;
+        let policy = load_policy_from_str(toml).unwrap();
+        assert_eq!(
+            policy.rules[0].conditions.executables,
+            Some(vec!["kubectl".to_string(), "docker".to_string()])
+        );
+    }
+
+    #[test]
+    fn reject_empty_executables_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["command_execute"]
+executables = []
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::EmptyExecutables(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected EmptyExecutables, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_too_many_executables_toml() {
+        let mut toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["command_execute"]
+executables = ["#
+            .to_string();
+        for i in 1..=(MAX_EXECUTABLE_PATTERNS + 1) {
+            if i > 1 {
+                toml.push_str(", ");
+            }
+            toml.push_str(&format!("\"exe-{}\"", i));
+        }
+        toml.push_str("]\n");
+        match load_policy_from_str(&toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::TooManyExecutables(
+                id,
+                count,
+            ))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(count, MAX_EXECUTABLE_PATTERNS + 1);
+            }
+            other => panic!("expected TooManyExecutables, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_empty_executable_pattern_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["command_execute"]
+executables = [""]
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::EmptyExecutable(id, idx))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            other => panic!("expected EmptyExecutable, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_executable_too_long_toml() {
+        let long = "a".repeat(MAX_EXECUTABLE_LENGTH + 1);
+        let toml = format!(
+            r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["command_execute"]
+executables = ["{long}"]
+"#
+        );
+        match load_policy_from_str(&toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::ExecutableTooLong(
+                id,
+                idx,
+                len,
+            ))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+                assert_eq!(len, MAX_EXECUTABLE_LENGTH + 1);
+            }
+            other => panic!("expected ExecutableTooLong, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_duplicate_executable_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["command_execute"]
+executables = ["kubectl", "kubectl"]
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::DuplicateExecutable(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected DuplicateExecutable, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_executable_null_byte_toml() {
+        let toml = format!(
+            "schema_version = 1\n\n[policy]\nid = \"test\"\ndefault_effect = \"deny\"\n\n[[rules]]\nid = \"r1\"\neffect = \"allow\"\n\n[rules.conditions]\noperations = [\"command_execute\"]\nexecutables = [\"{}\"]\n",
+            "kubectl\0"
+        );
+        match load_policy_from_str(&toml) {
+            Err(PolicyLoadError::Parse(_)) => {}
+            Err(PolicyLoadError::Validation(PolicyValidationError::InvalidExecutable(id, idx))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            other => panic!("expected Parse or InvalidExecutable, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_executable_control_char_toml() {
+        let toml = "schema_version = 1\n\n[policy]\nid = \"test\"\ndefault_effect = \"deny\"\n\n[[rules]]\nid = \"r1\"\neffect = \"allow\"\n\n[rules.conditions]\noperations = [\"command_execute\"]\nexecutables = [\"kubectl\\n\"]\n";
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::InvalidExecutable(id, idx))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            other => panic!("expected InvalidExecutable, got {:?}", other),
+        }
     }
 }

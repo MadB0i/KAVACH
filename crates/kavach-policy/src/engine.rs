@@ -323,6 +323,19 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
         }
     }
 
+    // --- Executable check — exact string match ---
+    if let Some(ref exes) = cond.executables {
+        match &request.resource {
+            kavach_core::resource::Resource::Command(cmd) => {
+                if !exes.iter().any(|e| e == cmd.executable()) {
+                    return false;
+                }
+            }
+            // Non-command resources never match when executables is configured.
+            _ => return false,
+        }
+    }
+
     // --- Path glob check — uses pre-compiled GlobSet ---
     if let Some(ref matcher) = cr.path_matcher {
         let resource_path = match request.resource.path() {
@@ -349,8 +362,8 @@ mod tests {
     use kavach_core::subject::Capability;
 
     use crate::model::{
-        DefaultEffect, Effect as PolicyEffect, MAX_PATH_GLOB_LENGTH, MAX_PATH_GLOB_PATTERNS,
-        Policy, Rule, RuleConditions,
+        DefaultEffect, Effect as PolicyEffect, MAX_EXECUTABLE_LENGTH, MAX_EXECUTABLE_PATTERNS,
+        MAX_PATH_GLOB_LENGTH, MAX_PATH_GLOB_PATTERNS, Policy, Rule, RuleConditions,
     };
 
     // -----------------------------------------------------------------------
@@ -1851,6 +1864,354 @@ mod tests {
             make_context(),
         );
         assert_eq!(engine.evaluate(&write_req).effect, DecisionEffect::Deny);
+    }
+
+    // -----------------------------------------------------------------------
+    // Command executable matching
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn command_matches_by_executable() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-kubectl").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["kubectl".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::CommandExecute,
+            Resource::Command(
+                kavach_core::resource::CommandResource::new(
+                    "kubectl",
+                    vec!["get".into(), "pods".into()],
+                )
+                .unwrap(),
+            ),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+        assert_eq!(
+            engine.evaluate(&req).reason,
+            ReasonCode::KavachAllowPolicyMatch
+        );
+    }
+
+    #[test]
+    fn command_non_matching_executable_denies() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-kubectl").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["kubectl".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::CommandExecute,
+            Resource::Command(
+                kavach_core::resource::CommandResource::new("docker", vec!["ps".into()]).unwrap(),
+            ),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn command_executable_list_any_match_works() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-safe").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["cat".into(), "ls".into(), "echo".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let cat_req = make_request_with(
+            make_subject(),
+            Operation::CommandExecute,
+            Resource::Command(
+                kavach_core::resource::CommandResource::new("cat", vec!["/etc/hosts".into()])
+                    .unwrap(),
+            ),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&cat_req).effect, DecisionEffect::Allow);
+
+        let ls_req = make_request_with(
+            make_subject(),
+            Operation::CommandExecute,
+            Resource::Command(
+                kavach_core::resource::CommandResource::new("ls", vec!["-la".into()]).unwrap(),
+            ),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&ls_req).effect, DecisionEffect::Allow);
+
+        // kubectl is not in the list.
+        let kubectl_req = make_request_with(
+            make_subject(),
+            Operation::CommandExecute,
+            Resource::Command(
+                kavach_core::resource::CommandResource::new(
+                    "kubectl",
+                    vec!["get".into(), "pods".into()],
+                )
+                .unwrap(),
+            ),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&kubectl_req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn executables_non_command_resource_no_match() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-cat").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["cat".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // File resource — should not match.
+        let req = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/workspace/foo.txt").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn executables_empty_skips_check() {
+        // When executables is None (default), it should not restrict matching.
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-cmd").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["command_execute".into()],
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::CommandExecute,
+            Resource::Command(
+                kavach_core::resource::CommandResource::new("any-tool", vec![]).unwrap(),
+            ),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    // -----------------------------------------------------------------------
+    // Executable validation — programmatic construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reject_empty_executables_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["command_execute".into()],
+                    executables: Some(vec![]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::EmptyExecutables(id)) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            _ => panic!("expected EmptyExecutables"),
+        }
+    }
+
+    #[test]
+    fn reject_too_many_executables_programmatic() {
+        let exes: Vec<String> = (0..=MAX_EXECUTABLE_PATTERNS)
+            .map(|i| format!("exe-{}", i))
+            .collect();
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["command_execute".into()],
+                    executables: Some(exes),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::TooManyExecutables(id, count)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(count, MAX_EXECUTABLE_PATTERNS + 1);
+            }
+            _ => panic!("expected TooManyExecutables"),
+        }
+    }
+
+    #[test]
+    fn reject_empty_executable_pattern_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["command_execute".into()],
+                    executables: Some(vec!["".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::EmptyExecutable(id, idx)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            _ => panic!("expected EmptyExecutable"),
+        }
+    }
+
+    #[test]
+    fn reject_executable_too_long_programmatic() {
+        let long = "a".repeat(MAX_EXECUTABLE_LENGTH + 1);
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["command_execute".into()],
+                    executables: Some(vec![long]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::ExecutableTooLong(id, idx, len)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+                assert_eq!(len, MAX_EXECUTABLE_LENGTH + 1);
+            }
+            _ => panic!("expected ExecutableTooLong"),
+        }
+    }
+
+    #[test]
+    fn reject_duplicate_executable_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["command_execute".into()],
+                    executables: Some(vec!["kubectl".into(), "kubectl".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::DuplicateExecutable(id)) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            _ => panic!("expected DuplicateExecutable"),
+        }
+    }
+
+    #[test]
+    fn reject_executable_null_byte() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["command_execute".into()],
+                    executables: Some(vec!["kubectl\0".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::InvalidExecutable(id, idx)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            _ => panic!("expected InvalidExecutable"),
+        }
+    }
+
+    #[test]
+    fn reject_executable_control_char() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["command_execute".into()],
+                    executables: Some(vec!["kubectl\n".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::InvalidExecutable(id, idx)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            _ => panic!("expected InvalidExecutable"),
+        }
     }
 
     // -----------------------------------------------------------------------
