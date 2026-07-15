@@ -1,7 +1,7 @@
 //! KAVACH runtime guard and execution permit contracts.
 //!
 //! The runtime layer connects validation, policy evaluation, and enforcement.
-//! A [`Guard`] evaluates a [`ToolRequest`] and returns a [`GuardOutcome`]:
+//! A [`Guard`] evaluates a [`ToolRequest`](kavach_core::request::ToolRequest) and returns a [`GuardOutcome`]:
 //! either [`Denied`](GuardOutcome::Denied),
 //! [`ApprovalRequired`](GuardOutcome::ApprovalRequired), or
 //! [`Permitted`](GuardOutcome::Permitted) with an [`ExecutionPermit`].

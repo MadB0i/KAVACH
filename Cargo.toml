@@ -6,6 +6,7 @@ members = [
     "crates/kavach-config",
     "crates/kavach-cli",
     "crates/kavach-runtime",
+    "crates/kavach-enforcement",
 ]
 
 [workspace.package]
@@ -24,6 +25,7 @@ kavach-core = { path = "crates/kavach-core", version = "0.1.0" }
 kavach-policy = { path = "crates/kavach-policy", version = "0.1.0" }
 kavach-config = { path = "crates/kavach-config", version = "0.1.0" }
 kavach-runtime = { path = "crates/kavach-runtime", version = "0.1.0" }
+kavach-enforcement = { path = "crates/kavach-enforcement", version = "0.1.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

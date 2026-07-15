@@ -2,43 +2,37 @@
 
 Last updated: 2026-07-13
 
-## Phase 0: Repository Audit and Recovery — COMPLETE
+## Phases 0-3 — COMPLETE (193 tests)
+## Phase 4: Filesystem Enforcement — COMPLETE (31 tests)
 
-## Phase 1: Complete Policy Matchers — COMPLETE
-- network_hosts, network_schemes, network_ports, secret_identifiers, tool_identifiers
-- 141 tests (engine + io)
+### Verification completed this session
 
-## Phase 2: Configuration (kavach-config) — COMPLETE
-- KavachConfig, 7 section structs, TOML + env overrides, validation
-- 11 tests
+1. **Permit consumption on failed FileWrite**:
+   - `file_write_consumes_permit_on_failure_and_reuse_rejected` — failed FileWrite consumes permit; reusing it returns `PermitConsumed`.
 
-## Phase 3: Runtime Guard and Permit Contracts — COMPLETE
-- kavach-runtime crate
-- Guard trait, GuardOutcome (Denied/ApprovalRequired/Permitted)
-- ExecutionPermit: SHA-256 token hashing, single-use, expiry, request digest binding
-- PolicyGuard implementation wrapping PolicyEngine
-- compute_request_digest for JSON-based deterministic hashing
-- 8 tests (permit lifecycle, guard outcomes)
+2. **Symlink rejection in FileWrite**:
+   - Fixed bug: `do_file_write` now checks for symlink target via `symlink_metadata().file_type().is_symlink()` on the pre-canonicalized path.
+   - `file_write_rejects_symlink_target` — creates a file + symlink, attempts write through symlink, verifies rejection and linked file unchanged. Skipped when platform cannot create symlinks.
+   - Symlink rejection is platform-neutral and uses `#[cfg]` for platform-specific symlink creation APIs.
 
-## Phases 4-18: NOT STARTED
+3. **Temp file cleanup after failure**:
+   - `file_write_temp_file_cleaned_after_success` — verifies no `.kavach_tmp_write_*` files remain after successful write.
+   - `file_write_no_temp_left_on_failure` — verifies no temp files remain after `WriteLimitExceeded` failure, and original content is unchanged.
 
-## Test Counts
+| Crate | Tests |
+|-------|-------|
+| kavach-core | 33 |
+| kavach-policy | 141 |
+| kavach-config | 11 |
+| kavach-runtime | 8 |
+| kavach-enforcement | 31 |
+| kavach-cli | 0 |
+| **Total** | **224** |
 
-| Crate | Tests | Status |
-|-------|-------|--------|
-| kavach-core | 33 | PASS |
-| kavach-policy | 141 | PASS |
-| kavach-config | 11 | PASS |
-| kavach-runtime | 8 | PASS |
-| kavach-cli | 0 | STUB |
-| **Total** | **193** | ALL PASS |
-
-## Known Blockers
-- None
-
-## Working-Tree Changes
-- `Cargo.toml` — added kavach-runtime workspace member + dep
-- `crates/kavach-config/src/lib.rs` — full config implementation
-- `crates/kavach-runtime/` — new crate
-- `config/*.toml` — example files
-- `docs/*.md` — state + handoff files
+## Verification Status
+```
+cargo fmt --all -- --check          PASS
+cargo test --workspace --all-features  PASS (224)
+cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS
+cargo doc --workspace --no-deps     PASS (zero warnings)
+```
