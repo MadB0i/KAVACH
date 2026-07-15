@@ -1,0 +1,24 @@
+[package]
+name = "kavach-runtime"
+description = "Runtime guard, execution permits, and enforcement contracts for the KAVACH security runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+kavach-core = { workspace = true }
+kavach-policy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sha2 = "0.10"
+constant_time_eq = "0.3"
+getrandom = "0.2"
+
+[lints]
+workspace = true

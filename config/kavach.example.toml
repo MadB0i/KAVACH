@@ -1,0 +1,40 @@
+# KAVACH example configuration
+# Copy to kavach.toml and adjust for your environment
+
+[server]
+# Address to bind the local gateway (loopback only by default)
+bind = "127.0.0.1:7421"
+# Must remain false unless explicit authentication is configured
+# allow_non_loopback = false
+request_body_limit = 1048576
+request_timeout_seconds = 30
+
+[security]
+# Root directory for filesystem operations
+workspace_root = "."
+# Must remain true — fail-closed posture is mandatory
+# fail_closed = true
+approval_required_for_destructive_operations = true
+
+[policy]
+# Policy files loaded at startup
+files = ["./config/default-policy.toml"]
+
+[audit]
+# SQLite database for the tamper-evident audit chain
+database = "./data/kavach-audit.db"
+verify_on_startup = true
+rotation_max_events = 100000
+
+[approval]
+# Default time-to-live for approval requests (seconds)
+default_ttl_seconds = 300
+max_pending = 1000
+
+[redaction]
+enabled = true
+
+[logging]
+level = "info"
+# "pretty" or "json"
+format = "pretty"

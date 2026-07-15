@@ -146,17 +146,17 @@ secrets, and external tools.
 - None beyond existing workspace dependencies
 
 ### Completion Criteria
-- [ ] `network_hosts: Option<Vec<String>>` on `RuleConditions` with validation
-- [ ] `network_schemes: Option<Vec<String>>` on `RuleConditions` with validation
-- [ ] `secret_identifiers: Option<Vec<String>>` on `RuleConditions` with validation
-- [ ] `tool_identifiers: Option<Vec<String>>` on `RuleConditions` with validation
-- [ ] TOML parsing for all four new fields
-- [ ] Engine matching logic for all four new fields
-- [ ] 24+ new tests (6 per resource type: match, no-match, non-resource, validation × programmatic × TOML)
-- [ ] `cargo fmt --all -- --check` passes
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes
-- [ ] `cargo test --workspace --all-features` passes
-- [ ] `cargo doc --workspace --no-deps` passes
+- [x] `network_hosts: Option<Vec<String>>` on `RuleConditions` with validation
+- [x] `network_schemes: Option<Vec<String>>` on `RuleConditions` with validation
+- [x] `secret_identifiers: Option<Vec<String>>` on `RuleConditions` with validation
+- [x] `tool_identifiers: Option<Vec<String>>` on `RuleConditions` with validation
+- [x] TOML parsing for all four new fields
+- [x] Engine matching logic for all four new fields
+- [x] 24+ new tests (6 per resource type: match, no-match, non-resource, validation × programmatic × TOML)
+- [x] `cargo fmt --all -- --check` passes
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes
+- [x] `cargo test --workspace --all-features` passes
+- [x] `cargo doc --workspace --no-deps` passes
 
 ### Explicit Non-Goals
 - No network IP/port matching (host-only, scheme-only)

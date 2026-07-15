@@ -336,6 +336,75 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
         }
     }
 
+    // --- Network host check — exact string match ---
+    if let Some(ref hosts) = cond.network_hosts {
+        match &request.resource {
+            kavach_core::resource::Resource::NetworkEndpoint(nr) => {
+                if !hosts.iter().any(|h| h == nr.host().as_str()) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+
+    // --- Network scheme check — exact string match ---
+    if let Some(ref schemes) = cond.network_schemes {
+        match &request.resource {
+            kavach_core::resource::Resource::NetworkEndpoint(nr) => {
+                if !schemes.iter().any(|s| s == nr.scheme().as_str()) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+
+    // --- Network port check — exact numeric match ---
+    if let Some(ref ports) = cond.network_ports {
+        match &request.resource {
+            kavach_core::resource::Resource::NetworkEndpoint(nr) => {
+                let matches = ports.iter().any(|&p| {
+                    if p == 0 {
+                        return true;
+                    }
+                    match nr.port() {
+                        Some(net_port) => net_port.value() == p,
+                        None => false,
+                    }
+                });
+                if !matches {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+
+    // --- Secret identifier check — exact string match ---
+    if let Some(ref ids) = cond.secret_identifiers {
+        match &request.resource {
+            kavach_core::resource::Resource::Secret { identifier } => {
+                if !ids.iter().any(|i| i == identifier) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+
+    // --- Tool identifier check — exact string match ---
+    if let Some(ref ids) = cond.tool_identifiers {
+        match &request.resource {
+            kavach_core::resource::Resource::ExternalTool { identifier } => {
+                if !ids.iter().any(|i| i == identifier) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+
     // --- Path glob check — uses pre-compiled GlobSet ---
     if let Some(ref matcher) = cr.path_matcher {
         let resource_path = match request.resource.path() {
@@ -363,6 +432,7 @@ mod tests {
 
     use crate::model::{
         DefaultEffect, Effect as PolicyEffect, MAX_EXECUTABLE_LENGTH, MAX_EXECUTABLE_PATTERNS,
+        MAX_IDENTIFIER_LENGTH, MAX_NETWORK_HOST_PATTERNS, MAX_NETWORK_PORT_PATTERNS,
         MAX_PATH_GLOB_LENGTH, MAX_PATH_GLOB_PATTERNS, Policy, Rule, RuleConditions,
     };
 
@@ -442,6 +512,29 @@ mod tests {
             default_effect,
             rules,
         }
+    }
+
+    fn make_network_request(scheme: &str, host: &str) -> ToolRequest {
+        make_network_request_with_port(scheme, host, None)
+    }
+
+    fn make_network_request_with_port(scheme: &str, host: &str, port: Option<u16>) -> ToolRequest {
+        use kavach_core::resource::{NetworkHost, NetworkPort, NetworkResource, NetworkScheme};
+        let net = Resource::NetworkEndpoint(
+            NetworkResource::new(
+                NetworkScheme::new(scheme).unwrap(),
+                NetworkHost::new(host).unwrap(),
+                port.map(NetworkPort::new),
+                "/",
+            )
+            .unwrap(),
+        );
+        make_request_with(
+            make_subject(),
+            Operation::NetworkRequest,
+            net,
+            make_context(),
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -2211,6 +2304,698 @@ mod tests {
                 assert_eq!(idx, 0);
             }
             _ => panic!("expected InvalidExecutable"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Network host matching
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn network_matches_by_host() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-example").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_hosts: Some(vec!["example.com".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_network_request("https", "example.com");
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+        assert_eq!(
+            engine.evaluate(&req).reason,
+            ReasonCode::KavachAllowPolicyMatch
+        );
+    }
+
+    #[test]
+    fn network_non_matching_host_denies() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-example").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_hosts: Some(vec!["example.com".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_network_request("https", "other.com");
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn network_host_non_network_resource_no_match() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-example").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_hosts: Some(vec!["example.com".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request(make_subject());
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    // -----------------------------------------------------------------------
+    // Network scheme matching
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn network_matches_by_scheme() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-https").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_schemes: Some(vec!["https".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_network_request("https", "example.com");
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    #[test]
+    fn network_non_matching_scheme_denies() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-https").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_schemes: Some(vec!["https".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_network_request("http", "example.com");
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn network_scheme_non_network_resource_no_match() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-https").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_schemes: Some(vec!["https".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request(make_subject());
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn network_host_and_scheme_and_operation() {
+        // All three must match for the rule to apply.
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("net-rule").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["network_request".into()],
+                    network_hosts: Some(vec!["example.com".into()]),
+                    network_schemes: Some(vec!["https".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // All three match → allow.
+        let req = make_network_request("https", "example.com");
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        // Wrong host → deny.
+        let req = make_network_request("https", "other.com");
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+
+        // Wrong scheme → deny.
+        let req = make_network_request("http", "example.com");
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    // -----------------------------------------------------------------------
+    // Network port matching
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn network_matches_by_port() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-443").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_ports: Some(vec![443]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_network_request_with_port("https", "example.com", Some(443));
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    #[test]
+    fn network_non_matching_port_denies() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-443").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_ports: Some(vec![443]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_network_request_with_port("https", "example.com", Some(80));
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn network_port_wildcard_zero_matches_any() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-any-port").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_ports: Some(vec![0]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_network_request_with_port("https", "example.com", Some(443));
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        let req = make_network_request_with_port("https", "example.com", Some(8080));
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+
+        // No port resource also matches wildcard.
+        let req = make_network_request("https", "example.com");
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    #[test]
+    fn network_port_no_port_resource_denies_when_ports_set() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-443").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_ports: Some(vec![443]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // Network request without a port → deny (unless 0 is in ports).
+        let req = make_network_request("https", "example.com");
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn network_port_non_network_resource_no_match() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-443").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    network_ports: Some(vec![443]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request(make_subject());
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    // -----------------------------------------------------------------------
+    // Secret identifier matching
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn secret_matches_by_identifier() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-db-pass").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    secret_identifiers: Some(vec!["db_password".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::SecretAccess,
+            Resource::Secret {
+                identifier: "db_password".into(),
+            },
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    #[test]
+    fn secret_non_matching_identifier_denies() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-db-pass").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    secret_identifiers: Some(vec!["db_password".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::SecretAccess,
+            Resource::Secret {
+                identifier: "api_key".into(),
+            },
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn secret_identifier_non_secret_resource_no_match() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-db-pass").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    secret_identifiers: Some(vec!["db_password".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request(make_subject());
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool identifier matching
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tool_matches_by_identifier() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-kubectl").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    tool_identifiers: Some(vec!["kubectl".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::ToolInvoke {
+                tool_id: "kubectl".into(),
+            },
+            Resource::ExternalTool {
+                identifier: "kubectl".into(),
+            },
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    #[test]
+    fn tool_non_matching_identifier_denies() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-kubectl").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    tool_identifiers: Some(vec!["kubectl".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::ToolInvoke {
+                tool_id: "docker".into(),
+            },
+            Resource::ExternalTool {
+                identifier: "docker".into(),
+            },
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn tool_identifier_non_tool_resource_no_match() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-kubectl").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    tool_identifiers: Some(vec!["kubectl".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request(make_subject());
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn tool_identifier_empty_skips_check() {
+        // When tool_identifiers is None (default), it does not restrict matching.
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-tool").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["tool_invoke".into()],
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let req = make_request_with(
+            make_subject(),
+            Operation::ToolInvoke {
+                tool_id: "any-tool".into(),
+            },
+            Resource::ExternalTool {
+                identifier: "any-tool".into(),
+            },
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    // -----------------------------------------------------------------------
+    // Network host, network scheme, secret, tool — validation (programmatic)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reject_empty_network_hosts_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["network_request".into()],
+                    network_hosts: Some(vec![]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::EmptyNetworkHosts(id)) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            _ => panic!("expected EmptyNetworkHosts"),
+        }
+    }
+
+    #[test]
+    fn reject_too_many_network_hosts_programmatic() {
+        let hosts: Vec<String> = (0..=MAX_NETWORK_HOST_PATTERNS)
+            .map(|i| format!("host-{}.com", i))
+            .collect();
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["network_request".into()],
+                    network_hosts: Some(hosts),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::TooManyNetworkHosts(id, count)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(count, MAX_NETWORK_HOST_PATTERNS + 1);
+            }
+            _ => panic!("expected TooManyNetworkHosts"),
+        }
+    }
+
+    #[test]
+    fn reject_empty_network_host_pattern_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["network_request".into()],
+                    network_hosts: Some(vec!["".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::EmptyNetworkHost(id, idx)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            _ => panic!("expected EmptyNetworkHost"),
+        }
+    }
+
+    #[test]
+    fn reject_network_host_too_long_programmatic() {
+        let long = "a".repeat(MAX_IDENTIFIER_LENGTH + 1);
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["network_request".into()],
+                    network_hosts: Some(vec![long]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::NetworkHostTooLong(id, idx, len)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+                assert_eq!(len, MAX_IDENTIFIER_LENGTH + 1);
+            }
+            _ => panic!("expected NetworkHostTooLong"),
+        }
+    }
+
+    #[test]
+    fn reject_duplicate_network_host_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["network_request".into()],
+                    network_hosts: Some(vec!["example.com".into(), "example.com".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::DuplicateNetworkHost(id)) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            _ => panic!("expected DuplicateNetworkHost"),
+        }
+    }
+
+    #[test]
+    fn reject_network_host_null_byte() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["network_request".into()],
+                    network_hosts: Some(vec!["example.com\0".into()]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::InvalidNetworkHost(id, idx)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            _ => panic!("expected InvalidNetworkHost"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Network port validation (programmatic)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reject_empty_network_ports_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["network_request".into()],
+                    network_ports: Some(vec![]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::EmptyNetworkPorts(id)) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            _ => panic!("expected EmptyNetworkPorts"),
+        }
+    }
+
+    #[test]
+    fn reject_too_many_network_ports_programmatic() {
+        let ports: Vec<u16> = (0..=MAX_NETWORK_PORT_PATTERNS).map(|i| i as u16).collect();
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["network_request".into()],
+                    network_ports: Some(ports),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::TooManyNetworkPorts(id, count)) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(count, MAX_NETWORK_PORT_PATTERNS + 1);
+            }
+            _ => panic!("expected TooManyNetworkPorts"),
+        }
+    }
+
+    #[test]
+    fn reject_duplicate_network_port_programmatic() {
+        let result = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("r1").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["network_request".into()],
+                    network_ports: Some(vec![443, 443]),
+                    ..Default::default()
+                },
+            }],
+        )]);
+        match result {
+            Err(PolicyValidationError::DuplicateNetworkPort(id)) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            _ => panic!("expected DuplicateNetworkPort"),
         }
     }
 

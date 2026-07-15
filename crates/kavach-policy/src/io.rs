@@ -80,6 +80,11 @@ struct TomlRuleConditions {
     intent_prefix: Option<String>,
     path_globs: Option<Vec<String>>,
     executables: Option<Vec<String>>,
+    network_hosts: Option<Vec<String>>,
+    network_schemes: Option<Vec<String>>,
+    secret_identifiers: Option<Vec<String>>,
+    tool_identifiers: Option<Vec<String>>,
+    network_ports: Option<Vec<u16>>,
 }
 
 /// Load a [Policy] from a TOML file at the given path.
@@ -137,6 +142,11 @@ fn convert(doc: TomlDocument) -> Result<Policy, PolicyLoadError> {
                 intent_prefix: c.intent_prefix.clone(),
                 path_globs: c.path_globs.clone(),
                 executables: c.executables.clone(),
+                network_hosts: c.network_hosts.clone(),
+                network_schemes: c.network_schemes.clone(),
+                secret_identifiers: c.secret_identifiers.clone(),
+                tool_identifiers: c.tool_identifiers.clone(),
+                network_ports: c.network_ports.clone(),
             },
             None => RuleConditions::default(),
         };
@@ -174,8 +184,8 @@ mod tests {
     use super::*;
     use crate::model::Effect;
     use crate::model::{
-        MAX_EXECUTABLE_LENGTH, MAX_EXECUTABLE_PATTERNS, MAX_PATH_GLOB_LENGTH,
-        MAX_PATH_GLOB_PATTERNS,
+        MAX_EXECUTABLE_LENGTH, MAX_EXECUTABLE_PATTERNS, MAX_NETWORK_HOST_PATTERNS,
+        MAX_PATH_GLOB_LENGTH, MAX_PATH_GLOB_PATTERNS,
     };
 
     #[test]
@@ -1104,6 +1114,352 @@ executables = ["kubectl", "kubectl"]
                 assert_eq!(idx, 0);
             }
             other => panic!("expected InvalidExecutable, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_network_hosts() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "net-policy"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+network_hosts = ["example.com", "internal.org"]
+"#;
+        let policy = load_policy_from_str(toml).unwrap();
+        assert_eq!(
+            policy.rules[0].conditions.network_hosts,
+            Some(vec!["example.com".to_string(), "internal.org".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_network_schemes() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "scheme-policy"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+network_schemes = ["https", "wss"]
+"#;
+        let policy = load_policy_from_str(toml).unwrap();
+        assert_eq!(
+            policy.rules[0].conditions.network_schemes,
+            Some(vec!["https".to_string(), "wss".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_secret_identifiers() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "secret-policy"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["secret_access"]
+secret_identifiers = ["db_password", "api_key"]
+"#;
+        let policy = load_policy_from_str(toml).unwrap();
+        assert_eq!(
+            policy.rules[0].conditions.secret_identifiers,
+            Some(vec!["db_password".to_string(), "api_key".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_tool_identifiers() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "tool-policy"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["tool_invoke"]
+tool_identifiers = ["kubectl", "docker"]
+"#;
+        let policy = load_policy_from_str(toml).unwrap();
+        assert_eq!(
+            policy.rules[0].conditions.tool_identifiers,
+            Some(vec!["kubectl".to_string(), "docker".to_string()])
+        );
+    }
+
+    #[test]
+    fn reject_empty_network_hosts_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+network_hosts = []
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::EmptyNetworkHosts(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected EmptyNetworkHosts, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_empty_network_schemes_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+network_schemes = []
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::EmptyNetworkSchemes(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected EmptyNetworkSchemes, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_empty_secret_identifiers_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["secret_access"]
+secret_identifiers = []
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::EmptySecretIdentifiers(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected EmptySecretIdentifiers, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_empty_tool_identifiers_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["tool_invoke"]
+tool_identifiers = []
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::EmptyToolIdentifiers(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected EmptyToolIdentifiers, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_too_many_network_hosts_toml() {
+        let mut toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+network_hosts = ["#
+            .to_string();
+        for i in 1..=(MAX_NETWORK_HOST_PATTERNS + 1) {
+            if i > 1 {
+                toml.push_str(", ");
+            }
+            toml.push_str(&format!("\"host-{}.com\"", i));
+        }
+        toml.push_str("]\n");
+        match load_policy_from_str(&toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::TooManyNetworkHosts(
+                id,
+                count,
+            ))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(count, MAX_NETWORK_HOST_PATTERNS + 1);
+            }
+            other => panic!("expected TooManyNetworkHosts, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_duplicate_network_host_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+network_hosts = ["example.com", "example.com"]
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::DuplicateNetworkHost(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected DuplicateNetworkHost, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_network_host_control_char_toml() {
+        let toml = "schema_version = 1\n\n[policy]\nid = \"test\"\ndefault_effect = \"deny\"\n\n[[rules]]\nid = \"r1\"\neffect = \"allow\"\n\n[rules.conditions]\noperations = [\"network_request\"]\nnetwork_hosts = [\"example.com\\n\"]\n";
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::InvalidNetworkHost(
+                id,
+                idx,
+            ))) => {
+                assert_eq!(id.as_str(), "r1");
+                assert_eq!(idx, 0);
+            }
+            other => panic!("expected InvalidNetworkHost, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_network_ports() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "port-policy"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+network_ports = [443, 80, 8080]
+"#;
+        let policy = load_policy_from_str(toml).unwrap();
+        assert_eq!(
+            policy.rules[0].conditions.network_ports,
+            Some(vec![443, 80, 8080])
+        );
+    }
+
+    #[test]
+    fn reject_empty_network_ports_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+network_ports = []
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::EmptyNetworkPorts(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected EmptyNetworkPorts, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reject_duplicate_network_port_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+network_ports = [443, 443]
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::DuplicateNetworkPort(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected DuplicateNetworkPort, got {:?}", other),
         }
     }
 }

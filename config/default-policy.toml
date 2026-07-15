@@ -1,0 +1,56 @@
+schema_version = 1
+
+[policy]
+id = "default-policy"
+name = "Default KAVACH Policy"
+description = "Fail-closed default policy: deny everything, allow safe project reads"
+default_effect = "deny"
+
+[[rules]]
+id = "allow-project-read"
+description = "Allow agents to read project source files"
+effect = "allow"
+
+[rules.conditions]
+operations = ["file_read"]
+resource_kinds = ["file"]
+path_globs = ["./**"]
+
+[[rules]]
+id = "allow-safe-commands"
+description = "Allow read-only inspection commands"
+effect = "allow"
+
+[rules.conditions]
+operations = ["command_execute"]
+resource_kinds = ["command"]
+executables = ["cat", "ls", "wc", "head", "tail", "grep", "find", "du", "df", "pwd", "echo", "date", "uname", "whoami", "git", "cargo"]
+
+[[rules]]
+id = "deny-dangerous-commands"
+description = "Block obviously dangerous commands"
+effect = "deny"
+
+[rules.conditions]
+operations = ["command_execute"]
+executables = ["rm", "sh", "bash", "zsh", "sudo", "chmod", "chown", "dd", "mkfs", "fdisk", "kill", "pkill", "reboot", "shutdown", "curl", "wget"]
+
+[[rules]]
+id = "require-approval-file-write"
+description = "Require human approval for any file write"
+effect = "require_approval"
+
+[rules.conditions]
+operations = ["file_write", "file_create", "file_delete", "file_move"]
+resource_kinds = ["file"]
+
+[[rules]]
+id = "allow-secure-network"
+description = "Allow approved HTTPS hosts"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+resource_kinds = ["network_endpoint"]
+network_schemes = ["https"]
+network_ports = [443]
