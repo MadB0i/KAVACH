@@ -2,6 +2,11 @@
 //!
 //! All filesystem operations require a valid, unexpired, single-use
 //! [`ExecutionPermit`] bound to the
+
+//! Filesystem enforcement adapter for the KAVACH security runtime.
+//!
+//! All filesystem operations require a valid, unexpired, single-use
+//! [`ExecutionPermit`] bound to the
 //! exact [`ToolRequest`].
 //!
 //! The adapter enforces:
@@ -9,6 +14,8 @@
 //! - Permit verification and consumption
 //! - Operation/resource compatibility
 //! - Bounded read/write sizes and directory entry counts
+
+pub mod command;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

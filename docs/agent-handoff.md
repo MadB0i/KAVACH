@@ -3,20 +3,21 @@
 Last updated: 2026-07-13
 
 ## Current Task
-Verification of FileWrite permit consumption, symlink rejection, and temp file cleanup. Phase 4 filesystem enforcement is complete and verified.
+Phases 0-5 complete. Next: Phase 6 — Network Enforcement Adapter.
 
 ## Files Changed (This Session)
-- `crates/kavach-enforcement/src/lib.rs` — added symlink check in `do_file_write`, added 3 verification tests (31 total), removed `eprintln!` for clippy compliance
+- `crates/kavach-enforcement/src/lib.rs` — added `pub mod command;` declaration
+- `crates/kavach-enforcement/src/command.rs` — new module: CommandEnforcer, CommandRisk, CommandError, CommandOutcome, CommandInput, process execution, risk analysis, environment filtering, shell protection, 28 tests
 - `docs/implementation-state.md` — updated
 - `docs/agent-handoff.md` — updated (this file)
 
 ## Commands Already Run (All Pass)
 ```
 cargo fmt --all -- --check          PASS
-cargo test --workspace --all-features  (224 pass)
-cargo clippy --workspace --all-targets --all-features -- -D warnings  (PASS)
+cargo test --workspace --all-features  (252 pass)
+cargo clippy --workspace --all-targets --all-features -- -D warnings  (PASS, zero)
 cargo doc --workspace --no-deps     (PASS)
 ```
 
 ## Resume Instructions
-Next phase: Phase 5 — Command Enforcement Adapter.
+Next phase: Phase 6 — Network Enforcement Adapter.
