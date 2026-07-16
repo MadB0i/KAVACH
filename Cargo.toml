@@ -56,7 +56,7 @@ ureq = "2"
 
 # Shared dev-only dependencies (used via `xxx.workspace = true` in crate dev-dependencies)
 proptest = "1"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.7", features = ["html_reports"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
