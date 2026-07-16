@@ -52,7 +52,7 @@ clap = { version = "4", features = ["derive", "color", "wrap_help"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 globset = "0.4"
-ureq = "2"
+ureq = "3"
 
 # Shared dev-only dependencies (used via `xxx.workspace = true` in crate dev-dependencies)
 proptest = "1"
