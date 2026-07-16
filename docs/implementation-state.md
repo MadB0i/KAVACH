@@ -81,7 +81,74 @@ Last updated: 2026-07-16
 - **Expiry**: dual TTL (pending + consumption window) enforced in `tick()`
 - **Validation**: ID/actor/summary length limits enforced on submission
 
-## Phase 7: Secret Detection and Redaction — COMPLETE (52 tests)
+## Phase 10: Runtime Orchestration — COMPLETE (43 tests)
+
+## Phase 10: Runtime Orchestration — COMPLETE (43 tests)
+
+## Phase 11: Local HTTP Gateway — COMPLETE (57 tests)
+
+### Gateway Architecture
+- `kavach-gateway/` — new dedicated crate
+- `GatewayBuilder` — builder pattern for constructing the HTTP server
+- `GatewayConfig` — bind address, body limit, timeout, concurrency, rate limit, CORS, shutdown timeout
+- `GatewayState` — shared state (KavachRuntime, GatewayToken, config, semaphore, rate limiter)
+- `GatewayToken` — CSPRNG 256-bit bearer token, SHA-256 hashed, constant-time verification
+- `GatewayError` / `KavachErrorCode` — 10 typed error codes mapping to HTTP status codes
+- Axum 0.7 router with tower middleware stack: rate limit → concurrency limit → timeout → body limit → CORS + security headers → request ID → auth → routes
+- 13 API endpoints: health, ready, status, evaluate, execute, approvals (list/get/approve/deny), audit (events/verify), policies (list/reload)
+
+### Middleware Stack (outermost → innermost)
+1. Rate limiter (sliding-window, configurable per-second + burst)
+2. Concurrency limiter (tokio::sync::Semaphore)
+3. Request timeout (tokio::time::timeout)
+4. Request body limit (tower-http RequestBodyLimitLayer)
+5. CORS (GET/POST/OPTIONS only, secure defaults)
+6. Security headers (X-Content-Type-Options, Cache-Control, Referrer-Policy, CSP)
+7. Request ID injection (UUID v4, X-Request-Id header, tracing span)
+8. Bearer token auth (SHA-256, constant-time, 401 on failure)
+9. Route handlers
+
+### Key Protections
+- **Non-loopback protection**: binding to non-loopback addresses requires `allow_non_loopback: true`
+- **Auth token**: 256-bit CSPRNG, SHA-256 at rest, constant-time verification, never logged
+- **Rate limiting**: sliding-window per-second + burst limits
+- **Concurrency limiting**: semaphore-based max concurrent requests
+- **Request timeout**: configurable per-request timeout
+- **Body limit**: 1 MiB default, checked during streaming
+- **Security headers**: nosniff, no-store, no-referrer, frame-ancestors 'none'
+- **CORS**: secure defaults (no origin allow by default)
+
+### Runtime Changes (supporting gateway)
+- Added `reload_policies(&mut self, policies)` to `KavachRuntime` (atomic engine swap)
+- Added accessor methods: `audit_store()`, `broker()`, `config()`
+- Added `get_approval()` to `ApprovalBroker` trait + `SqliteApprovalBroker`
+- Added `from_existing()` constructor and accessor methods to `ExecutionPermit`
+- Added `Serialize` + `Deserialize` derives to `PermitScope`
+
+### Test Coverage (57 gateway tests)
+| Category | Tests |
+|----------|-------|
+| Auth token (generate/verify/from_hash/reject/constant-time) | 11 |
+| Error codes (string/HTTP status/constructors) | 3 |
+| Type conversions (PermitDto, EvaluateOutcomeDto, ExecuteRequest) | 6 |
+| Health/ready/status routes | 4 |
+| Auth middleware (missing/wrong/bad-scheme) | 3 |
+| Request ID middleware (presence/uniqueness) | 2 |
+| Approval routes (list/get/approve/deny nonexistent) | 4 |
+| Audit routes (list/limit-zero/verify) | 3 |
+| Policy routes (list/reload empty/nonexistent) | 3 |
+| Evaluate routes (valid/invalid request) | 2 |
+| Security headers | 1 |
+| Rate limiter (within/burst/reject/recover) | 4 |
+| Request body limit | 1 |
+| Concurrency semaphore | 1 |
+| Timeout error code | 1 |
+| CORS headers | 1 |
+| Policy reload (invalid preserves previous) | 1 |
+| Execute (consumed permit/wrong secret/mismatched request) | 3 |
+| Non-loopback validation (default/opt-in/loopback/IPv6/invalid) | 5 |
+| Graceful shutdown | 1 |
+| **Total** | **57** |
 
 ### Redaction Architecture
 - `kavach-redaction/` — new dedicated crate
@@ -132,25 +199,76 @@ Last updated: 2026-07-16
 | SecretContainer limits | 2 |
 | **Total** | **52** |
 
+## Phase 12: CLI — COMPLETE (17 tests)
+
+### CLI Architecture
+- `kavach-cli/` — binary crate with clap derive subcommands
+- 13 production commands backed by existing crates (no runtime/gateway duplication)
+- Human and JSON output modes (`--output human|json`)
+- Stable exit codes: 0 success, 10 deny, 11 approval required, 20 invalid input, 21 policy error, 22 audit error, 30 internal, 40 unavailable
+- Typed `CliError` with sanitized messages (no secrets logged)
+- `CliOutput` renderer for structured human/JSON output
+
+### Commands
+| Command | Backed By | Description |
+|---------|-----------|-------------|
+| `kavach --version` | built-in (clap) | Print version |
+| `kavach doctor` | filesystem checks | Check environment for common issues |
+| `kavach config validate --file` | `kavach_config::load_config` | Validate config TOML |
+| `kavach policy validate --file` | `kavach_policy::load_policy_from_file` | Validate policy TOML |
+| `kavach policy check --policy --request` | `PolicyEngine::evaluate` | Check request against policy, exit 10/11 on deny/approval |
+| `kavach policy explain --policy --request` | `PolicyEngine::evaluate` | Explain policy decision |
+| `kavach request validate --file` | `ToolRequest::validate` | Validate request JSON |
+| `kavach audit verify --database` | `AuditStore::verify_full` | Verify audit chain integrity |
+| `kavach audit list --database` | `AuditStore::events_after_sequence` | List audit events |
+| `kavach approval list` | `ApprovalBroker::list_pending` | List pending approvals |
+| `kavach approval approve <id>` | `ApprovalBroker::approve` | Approve a pending approval |
+| `kavach approval deny <id>` | `ApprovalBroker::deny` | Deny a pending approval |
+| `kavach serve --config` | `GatewayBuilder::start` | Start HTTP gateway |
+
+### Key Protections
+- **No secret logging**: errors use sanitized `CliError` messages; approval tokens never logged
+- **Stable exit codes**: typed `ExitCode` enum for programmatic use
+- **Early validation**: IDs validated before opening databases
+- **JSON/Human output**: `CliOutput` renderer supports both modes
+- **Integration tested**: 17 tests with `assert_cmd` covering error paths, valid config, valid policy, JSON output
+
+### Test Coverage (17 CLI integration tests)
+| Category | Tests |
+|----------|-------|
+| Version/help | 2 |
+| Doctor | 1 |
+| Config validate (nonexistent/valid/invalid) | 3 |
+| Policy validate (nonexistent/valid) | 2 |
+| Policy check (nonexistent path) | 1 |
+| Request validate (nonexistent/invalid JSON) | 2 |
+| Audit verify/list (nonexistent database) | 2 |
+| Approval approve/deny (invalid ID) | 2 |
+| Invalid subcommand | 1 |
+| JSON output flag | 1 |
+| **Total** | **17** |
+
 ### Test Summary
 | Crate | Tests |
 |-------|-------|
-| kavach-core | 33 |
+| kavach-core | 43 |
 | kavach-policy | 141 |
 | kavach-config | 11 |
-| kavach-runtime | 8 |
+| kavach-runtime | 43 |
 | kavach-enforcement | 134 |
 | kavach-redaction | 52 |
 | kavach-approval | 56 |
-| kavach-cli | 0 |
-| **Total** | **435** |
+| kavach-gateway | 57 |
+| kavach-cli | 17 |
+| **Total** | **554** |
 
 ## Verification
 ```
-cargo fmt --all -- --check          PASS
-cargo test --workspace --all-features  PASS (435)
+cargo fmt --all                          PASS
+cargo check --workspace --all-targets --all-features  PASS
+cargo test --workspace --all-features    PASS (554)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
-cargo doc --workspace --no-deps     PASS
+cargo doc --workspace --no-deps          PASS
 
 ## Platform Limitations
 - Loopback blocked by default; local test server integration tests use `with_allow_loopback(true)` override

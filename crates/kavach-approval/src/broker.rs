@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use kavach_audit::AuditEventCategory;
 use kavach_audit::AuditStore;
 use kavach_audit::event::AuditAppendInput;
+use kavach_core::compute_request_digest;
 use kavach_core::ids::ApprovalId;
-use kavach_runtime::compute_request_digest;
 
 use crate::clock::Clock;
 use crate::error::ApprovalError;
@@ -69,6 +70,9 @@ pub trait ApprovalBroker: Send + Sync {
         after_sequence: u64,
         limit: Option<u64>,
     ) -> Result<Vec<ApprovalRecord>, ApprovalError>;
+
+    /// Returns a single approval record by ID, regardless of state.
+    fn get_approval(&self, approval_id: &ApprovalId) -> Result<ApprovalRecord, ApprovalError>;
 }
 
 /// SQLite-backed implementation of [`ApprovalBroker`].
@@ -357,9 +361,28 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
         self.store
             .consume(approval_id.as_str(), &consumed_at, seq, &*self.clock)?;
 
+        // Decode the stored digest for cross-crate verification.
+        let digest_bytes =
+            hex::decode(&row.request_digest_hex).map_err(|_| ApprovalError::invalid_token())?;
+        let mut request_digest = [0u8; 32];
+        if digest_bytes.len() == 32 {
+            request_digest.copy_from_slice(&digest_bytes);
+        }
+
+        let matched_rule_ids: Vec<String> = if row.matched_rule_ids.is_empty() {
+            vec![]
+        } else {
+            row.matched_rule_ids
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect()
+        };
+
         let consumed_at_dt = self.clock.now();
         Ok(ConsumedApproval {
             approval_id: approval_id.clone(),
+            request_digest,
+            matched_rule_ids,
             consumed_at: consumed_at_dt,
             audit_sequence: Some(seq),
         })
@@ -391,4 +414,42 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
         let rows = self.store.list_after_sequence(after_sequence, limit)?;
         Ok(rows.into_iter().map(crate::store::row_to_record).collect())
     }
+
+    fn get_approval(&self, approval_id: &ApprovalId) -> Result<ApprovalRecord, ApprovalError> {
+        let row = self
+            .store
+            .load(approval_id.as_str())?
+            .ok_or_else(ApprovalError::not_found)?;
+        Ok(crate::store::row_to_record(row))
+    }
+}
+
+// ── Standalone factory functions ──────────────────────────────────────────
+
+/// Opens or creates the approval database and returns an `Arc<dyn ApprovalBroker>`.
+pub fn open_approval_broker(
+    db_path: &str,
+    config: ApprovalStoreConfig,
+    audit_store: AuditStore,
+    clock: Box<dyn Clock>,
+) -> Result<Arc<dyn ApprovalBroker>, ApprovalError> {
+    Ok(Arc::new(SqliteApprovalBroker::open(
+        db_path,
+        config,
+        audit_store,
+        clock,
+    )?))
+}
+
+/// Opens an in-memory approval store and returns an `Arc<dyn ApprovalBroker>`.
+pub fn open_approval_broker_in_memory(
+    config: ApprovalStoreConfig,
+    audit_store: AuditStore,
+    clock: Box<dyn Clock>,
+) -> Result<Arc<dyn ApprovalBroker>, ApprovalError> {
+    Ok(Arc::new(SqliteApprovalBroker::open_in_memory(
+        config,
+        audit_store,
+        clock,
+    )?))
 }

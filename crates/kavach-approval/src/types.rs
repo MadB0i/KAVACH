@@ -177,6 +177,10 @@ pub struct ApprovalRecord {
 pub struct ConsumedApproval {
     /// Unique approval ID.
     pub approval_id: ApprovalId,
+    /// SHA-256 digest of the original request.
+    pub request_digest: [u8; 32],
+    /// Matched rule IDs that triggered the approval.
+    pub matched_rule_ids: Vec<String>,
     /// When the token was consumed.
     pub consumed_at: DateTime<Utc>,
     /// Audit event sequence reference, if available.

@@ -12,9 +12,8 @@ categories.workspace = true
 
 [dependencies]
 kavach-core = { workspace = true }
-kavach-audit = { path = "../kavach-audit", version = "0.1.0" }
+kavach-audit = { workspace = true }
 kavach-redaction = { workspace = true }
-kavach-runtime = { path = "../kavach-runtime", version = "0.1.0" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }

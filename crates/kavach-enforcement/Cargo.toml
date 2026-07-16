@@ -12,7 +12,6 @@ categories.workspace = true
 
 [dependencies]
 kavach-core = { workspace = true }
-kavach-runtime = { workspace = true }
 thiserror = { workspace = true }
 dunce = "1"
 ureq = { workspace = true }

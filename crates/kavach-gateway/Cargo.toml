@@ -1,0 +1,41 @@
+[package]
+name = "kavach-gateway"
+description = "Local HTTP API gateway for the KAVACH security runtime"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kavach-core = { workspace = true }
+kavach-runtime = { workspace = true }
+kavach-audit = { workspace = true }
+kavach-approval = { workspace = true }
+kavach-policy = { workspace = true }
+kavach-config = { workspace = true }
+kavach-enforcement = { workspace = true }
+kavach-redaction = { workspace = true }
+
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.4", features = ["limit", "timeout"] }
+tower-http = { version = "0.5", features = ["cors", "limit", "set-header", "sensitive-headers"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+getrandom = "0.2"
+constant_time_eq = "0.3"
+thiserror = { workspace = true }
+http = "1"
+hyper = { version = "1", features = ["full"] }
+bytes = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.4", features = ["util"] }

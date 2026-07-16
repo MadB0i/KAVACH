@@ -16,7 +16,9 @@ pub mod token;
 /// Domain types for approval requests, records, and state machine.
 pub mod types;
 
-pub use broker::{ApprovalBroker, SqliteApprovalBroker};
+pub use broker::{
+    ApprovalBroker, SqliteApprovalBroker, open_approval_broker, open_approval_broker_in_memory,
+};
 pub use clock::{Clock, FakeClock, RealClock};
 pub use error::ApprovalError;
 pub use token::ApprovalToken;
@@ -263,8 +265,8 @@ mod tests {
         // Can't create duplicate at the broker level, but we can compare digests.
         drop(p1);
         // Digests of identical requests are equal.
-        let digest1 = kavach_runtime::compute_request_digest(&req1.request);
-        let digest2 = kavach_runtime::compute_request_digest(&req2.request);
+        let digest1 = kavach_core::compute_request_digest(&req1.request);
+        let digest2 = kavach_core::compute_request_digest(&req2.request);
         assert_eq!(digest1, digest2);
     }
 
@@ -286,8 +288,8 @@ mod tests {
             Resource::file("/workspace/other.txt").unwrap(),
             RequestContext::new(None, None, None, None, false).unwrap(),
         );
-        let d1 = kavach_runtime::compute_request_digest(&req1);
-        let d2 = kavach_runtime::compute_request_digest(&req2_new);
+        let d1 = kavach_core::compute_request_digest(&req1);
+        let d2 = kavach_core::compute_request_digest(&req2_new);
         assert_ne!(d1, d2);
     }
 

@@ -10,9 +10,9 @@ use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
+use kavach_core::permit::ExecutionPermit;
 use kavach_core::request::{Operation, ToolRequest};
 use kavach_core::resource::Resource;
-use kavach_runtime::ExecutionPermit;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -390,7 +390,7 @@ fn verify_network_permit(
     if permit.is_consumed() {
         return Err(NetworkError::PermitConsumed);
     }
-    let digest = kavach_runtime::compute_request_digest(request);
+    let digest = kavach_core::compute_request_digest(request);
     if !permit.verify_request_digest(&digest) {
         return Err(NetworkError::InvalidPermit(
             "permit does not match request digest".into(),
@@ -764,6 +764,7 @@ fn validate_redirect_url(url: &str, allow_http: bool) -> Result<(), NetworkError
 mod tests {
     use super::*;
     use kavach_core::ids::{AgentId, RequestId, SessionId};
+    use kavach_core::permit::PermitScope;
     use kavach_core::request::{AgentSubjectBuilder, RequestContext};
     use kavach_core::resource::{NetworkHost, NetworkResource, NetworkScheme};
     use std::io::Write;
@@ -784,13 +785,27 @@ mod tests {
     }
 
     fn make_permit(request: &ToolRequest) -> ExecutionPermit {
-        let digest = kavach_runtime::compute_request_digest(request);
-        ExecutionPermit::new(&[1u8; 32], vec![], digest, Duration::from_secs(300))
+        let digest = kavach_core::compute_request_digest(request);
+        ExecutionPermit::new(
+            &[1u8; 32],
+            request.request_id.clone(),
+            PermitScope::NetworkRequest,
+            vec![],
+            digest,
+            Duration::from_secs(300),
+        )
     }
 
     fn make_expired_permit(request: &ToolRequest) -> ExecutionPermit {
-        let digest = kavach_runtime::compute_request_digest(request);
-        ExecutionPermit::new(&[2u8; 32], vec![], digest, Duration::from_secs(0))
+        let digest = kavach_core::compute_request_digest(request);
+        ExecutionPermit::new(
+            &[2u8; 32],
+            request.request_id.clone(),
+            PermitScope::NetworkRequest,
+            vec![],
+            digest,
+            Duration::from_secs(0),
+        )
     }
 
     fn net_request(host: &str, scheme: &str) -> ToolRequest {

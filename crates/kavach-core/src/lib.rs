@@ -19,15 +19,21 @@
 #![forbid(unsafe_code)]
 
 pub mod decision;
+/// Request digest computation for permit binding.
+pub mod digest;
 pub mod error;
 pub mod ids;
+/// Execution permit types and scope definitions.
+pub mod permit;
 pub mod request;
 pub mod resource;
 pub mod subject;
 
 pub use decision::{ApprovalRequirements, AuthorizationDecision, DecisionEffect, ReasonCode};
+pub use digest::compute_request_digest;
 pub use error::{DomainError, DomainErrorKind, DomainValidationError, FieldPath};
 pub use ids::{AgentId, ApprovalId, MAX_ID_LEN, PolicyId, RequestId, RuleId, SessionId};
+pub use permit::{ExecutionPermit, PermitScope, required_scope};
 pub use request::{AgentSubjectBuilder, Operation, RequestContext, ToolRequest};
 pub use resource::{
     CommandResource, MAX_IDENTIFIER_LEN, MAX_PATH_LEN, NetworkHost, NetworkPort, NetworkResource,

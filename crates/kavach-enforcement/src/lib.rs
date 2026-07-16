@@ -21,9 +21,9 @@ pub mod network;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use kavach_core::permit::ExecutionPermit;
 use kavach_core::request::{Operation, ToolRequest};
 use kavach_core::resource::Resource;
-use kavach_runtime::ExecutionPermit;
 
 /// Default maximum bytes per file read operation (64 MiB).
 pub const MAX_FILE_READ_BYTES: u64 = 64 * 1024 * 1024;
@@ -510,7 +510,7 @@ fn verify_and_consume_permit(
     if permit.is_consumed() {
         return Err(FilesystemError::PermitConsumed);
     }
-    let digest = kavach_runtime::compute_request_digest(request);
+    let digest = kavach_core::compute_request_digest(request);
     if !permit.verify_request_digest(&digest) {
         return Err(FilesystemError::InvalidPermit(
             "permit does not match request digest".into(),
@@ -689,8 +689,9 @@ fn unique_suffix() -> String {
 mod tests {
     use super::*;
     use kavach_core::ids::{AgentId, RequestId, SessionId};
+    use kavach_core::permit::ExecutionPermit;
+    use kavach_core::permit::PermitScope;
     use kavach_core::request::{AgentSubjectBuilder, RequestContext};
-    use kavach_runtime::ExecutionPermit;
     use std::time::Duration;
 
     fn make_subject() -> kavach_core::subject::AgentSubject {
@@ -727,8 +728,15 @@ mod tests {
     }
 
     fn make_permit(request: &ToolRequest) -> ExecutionPermit {
-        let digest = kavach_runtime::compute_request_digest(request);
-        ExecutionPermit::new(&[1u8; 32], vec![], digest, Duration::from_secs(300))
+        let digest = kavach_core::compute_request_digest(request);
+        ExecutionPermit::new(
+            &[1u8; 32],
+            request.request_id.clone(),
+            PermitScope::FilesystemRead,
+            vec![],
+            digest,
+            Duration::from_secs(300),
+        )
     }
 
     fn make_enforcer(tmp: &std::path::Path) -> FilesystemEnforcer {
@@ -1344,8 +1352,15 @@ mod tests {
     // ----------------------------------------------------------------
 
     fn make_expired_permit(request: &ToolRequest) -> ExecutionPermit {
-        let digest = kavach_runtime::compute_request_digest(request);
-        ExecutionPermit::new(&[2u8; 32], vec![], digest, Duration::from_secs(0))
+        let digest = kavach_core::compute_request_digest(request);
+        ExecutionPermit::new(
+            &[2u8; 32],
+            request.request_id.clone(),
+            PermitScope::FilesystemRead,
+            vec![],
+            digest,
+            Duration::from_secs(0),
+        )
     }
 
     fn uuid_simple() -> String {

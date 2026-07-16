@@ -15,9 +15,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use kavach_core::permit::ExecutionPermit;
 use kavach_core::request::{Operation, ToolRequest};
 use kavach_core::resource::Resource;
-use kavach_runtime::ExecutionPermit;
 
 /// Default command execution timeout (seconds).
 pub const DEFAULT_COMMAND_TIMEOUT_SECONDS: u64 = 60;
@@ -183,6 +183,14 @@ impl CommandEnforcer {
         })
     }
 
+    /// Classify a command's risk level by executable name.
+    ///
+    /// This uses the same logic as the enforcement adapter but without
+    /// requiring a full `ToolRequest` or argument inspection.
+    pub fn classify(&self, executable: &str) -> CommandRisk {
+        classify_risk(executable, &[])
+    }
+
     /// Execute a guarded command.
     pub fn execute(
         &self,
@@ -278,7 +286,7 @@ fn verify_command_permit(
     if permit.is_consumed() {
         return Err(CommandError::PermitConsumed);
     }
-    let digest = kavach_runtime::compute_request_digest(request);
+    let digest = kavach_core::compute_request_digest(request);
     if !permit.verify_request_digest(&digest) {
         return Err(CommandError::InvalidPermit(
             "permit does not match request digest".into(),
@@ -945,6 +953,7 @@ fn wait_timeout(
 mod tests {
     use super::*;
     use kavach_core::ids::{AgentId, RequestId, SessionId};
+    use kavach_core::permit::PermitScope;
     use kavach_core::request::{AgentSubjectBuilder, RequestContext};
     use std::time::Duration;
 
@@ -962,13 +971,27 @@ mod tests {
     }
 
     fn make_permit(request: &ToolRequest) -> ExecutionPermit {
-        let digest = kavach_runtime::compute_request_digest(request);
-        ExecutionPermit::new(&[1u8; 32], vec![], digest, Duration::from_secs(300))
+        let digest = kavach_core::compute_request_digest(request);
+        ExecutionPermit::new(
+            &[1u8; 32],
+            request.request_id.clone(),
+            PermitScope::CommandLowRisk,
+            vec![],
+            digest,
+            Duration::from_secs(300),
+        )
     }
 
     fn make_expired_permit(request: &ToolRequest) -> ExecutionPermit {
-        let digest = kavach_runtime::compute_request_digest(request);
-        ExecutionPermit::new(&[2u8; 32], vec![], digest, Duration::from_secs(0))
+        let digest = kavach_core::compute_request_digest(request);
+        ExecutionPermit::new(
+            &[2u8; 32],
+            request.request_id.clone(),
+            PermitScope::CommandLowRisk,
+            vec![],
+            digest,
+            Duration::from_secs(0),
+        )
     }
 
     fn cmd_request(exe: &str, args: &[&str]) -> ToolRequest {

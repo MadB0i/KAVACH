@@ -3,70 +3,97 @@
 Last updated: 2026-07-16
 
 ## Current Task
-Phase 8 — Human Approval Broker — COMPLETE (56 tests, 435 total).
+Phase 12 — CLI — COMPLETE (17 CLI tests, 554 total).
 
 ## Key Changes (This Session)
-- Created `crates/kavach-approval/` — new workspace crate (6 source modules, 56 tests)
-- Implemented `ApprovalBroker` trait + `SqliteApprovalBroker` with `AuditStore` integration
-- `SqliteApprovalStore` — SQLite-backed persistence (WAL, foreign keys, busy_timeout, migration support)
-- `ApprovalToken` — CSPRNG 256-bit bearer token, SHA-256 hashed at rest, constant-time verification, Debug/Display redacted
-- `ApprovalState` — 6-state machine: Pending → Approved → Consumed | Rejected | Expired | Cancelled
-- Request digest binding (SHA-256 of request_id + resource + action + subject) prevents token replay
-- Clock abstraction (`Clock` trait, `RealClock`, `FakeClock`) for testable time
-- Pending TTL (configurable, default 30min) + consumption window (5min after approval)
-- All state transitions inside `BEGIN IMMEDIATE` transactions for concurrency safety
-- Created `docs/approvals.md` with architecture, state machine diagram, token lifecycle, threat model
+- Implemented full `kavach-cli` with 13 clap derive commands backed by existing crates
+- No duplication of runtime/gateway logic
+- Human and JSON output modes via `--output human|json`
+- Stable exit codes: 0 success, 10 deny, 11 approval required, 20 invalid input, 21 policy error, 22 audit error, 30 internal, 40 unavailable
+- Typed `CliError` with sanitized messages — no secret/token logging
+- `CliOutput` renderer with structured data formatting
+- 17 integration tests with `assert_cmd` and `predicates`
+
+### Commands Implemented
+| Command | Description |
+|---------|-------------|
+| `kavach --version` | Built-in clap version |
+| `kavach doctor` | Environment health check |
+| `kavach config validate --file <path>` | Validate config TOML |
+| `kavach policy validate --file <path>` | Validate policy TOML |
+| `kavach policy check --policy --request` | Check request vs policy (exit 10/11) |
+| `kavach policy explain --policy --request` | Explain policy decision |
+| `kavach request validate --file <path>` | Validate request JSON |
+| `kavach audit verify --database <path>` | Verify audit chain integrity |
+| `kavach audit list --database <path>` | List audit events |
+| `kavach approval list` | List pending approvals (needs config) |
+| `kavach approval approve <id>` | Approve pending approval |
+| `kavach approval deny <id>` | Deny pending approval |
+| `kavach serve --config <path>` | Start HTTP gateway |
 
 ## Files Changed
-- `Cargo.toml` — added kavach-approval to workspace members
-- `crates/kavach-approval/Cargo.toml` — new crate manifest with all deps + tempfile dev-dep
-- `crates/kavach-approval/src/lib.rs` — crate root, module decls, re-exports, 56 tests
-- `crates/kavach-approval/src/types.rs` — ApprovalState, ApprovalActor, ApprovalRequest, PendingApproval, ApprovalRecord, ConsumedApproval, ApprovalRow, ApprovalStoreConfig, validation constants
-- `crates/kavach-approval/src/error.rs` — ApprovalError, ApprovalErrorKind (23 variants), typed constructors
-- `crates/kavach-approval/src/token.rs` — ApprovalToken (generate, hash, verify_hash)
-- `crates/kavach-approval/src/clock.rs` — Clock trait, RealClock, FakeClock
-- `crates/kavach-approval/src/store.rs` — SqliteApprovalStore (pub(crate))
-- `crates/kavach-approval/src/broker.rs` — ApprovalBroker trait, SqliteApprovalBroker
-- `docs/approvals.md` — new file (full architecture and threat model documentation)
-- `docs/implementation-state.md` — updated with Phase 8
+
+### New Files
+- `crates/kavach-cli/src/main.rs` — clap CLI definition, dispatch
+- `crates/kavach-cli/src/exit.rs` — ExitCode enum (8 stable codes)
+- `crates/kavach-cli/src/error.rs` — CliError typed error
+- `crates/kavach-cli/src/output.rs` — CliOutput renderer (human/JSON)
+- `crates/kavach-cli/src/commands/mod.rs` — command module declarations
+- `crates/kavach-cli/src/commands/doctor.rs` — kavach doctor
+- `crates/kavach-cli/src/commands/config_cmd.rs` — config validate
+- `crates/kavach-cli/src/commands/policy.rs` — policy validate/check/explain
+- `crates/kavach-cli/src/commands/request.rs` — request validate
+- `crates/kavach-cli/src/commands/audit.rs` — audit verify/list
+- `crates/kavach-cli/src/commands/approval.rs` — approval list/approve/deny
+- `crates/kavach-cli/src/commands/serve.rs` — kavach serve
+- `crates/kavach-cli/tests/cli_integration.rs` — 17 integration tests
+
+### Modified Files
+- `root Cargo.toml` — added kavach-gateway to workspace dependencies
+- `crates/kavach-cli/Cargo.toml` — added dependencies (kavach-*, tokio, etc.)
+- `docs/implementation-state.md` — updated with Phase 12
 - `docs/agent-handoff.md` — updated (this file)
 
 ## Commands Already Run (All Pass)
 ```
-cargo fmt --all                          PASS
-cargo test --workspace --all-features    PASS (435)
-cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
-cargo doc --workspace --no-deps          PASS
+cargo fmt --all                                                    PASS
+cargo check --workspace --all-targets --all-features               PASS
+cargo test --workspace --all-features                              PASS (554)
+cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS
+cargo doc --workspace --no-deps                                    PASS (0 warnings)
 ```
 
 ## Verification Checklist
-- [x] kavach-approval crate scaffolded with Cargo.toml
-- [x] ApprovalBroker trait + SqliteApprovalBroker with AuditStore integration
-- [x] SqliteApprovalStore with SQLite migrations (WAL, foreign keys, busy_timeout)
-- [x] ApprovalToken (256-bit CSPRNG, SHA-256 hash, constant-time verify, redacted debug)
-- [x] 6-state machine (Pending, Approved, Rejected, Expired, Consumed, Cancelled)
-- [x] State transition enforcement (no invalid transitions like Rejected → Approved)
-- [x] Request digest binding (SHA-256 of request_id + resource + action + subject)
-- [x] Pending TTL (30min default) + consumption window (5min)
-- [x] Clock abstraction (RealClock, FakeClock)
-- [x] All transitions in BEGIN IMMEDIATE transactions
-- [x] Duplicate active approval detection per request_id
-- [x] Validation: ID/actor/summary length limits
-- [x] Audit logging on every state transition
-- [x] 56 tests: DB migration, creation/dedup, token, transitions, expiry, concurrency, audit, restart, edge cases
-- [x] docs/approvals.md created
-- [x] Clippy zero warnings
-- [x] All 435 workspace tests pass
-- [x] cargo doc successful
+- [x] `kavach --version` prints version
+- [x] `kavach doctor` checks workspace, config, policy, data dirs
+- [x] `kavach config validate` validates TOML syntax + semantic rules
+- [x] `kavach policy validate` validates policy TOML
+- [x] `kavach policy check` returns exit 10 (deny) or 11 (approval) for non-allow outcomes
+- [x] `kavach policy explain` prints decision details
+- [x] `kavach request validate` validates request JSON
+- [x] `kavach audit verify` opens audit DB and verifies chain
+- [x] `kavach audit list` lists audit events
+- [x] `kavach approval list` lists pending approvals (via config)
+- [x] `kavach approval approve <id>` approves with CLI actor
+- [x] `kavach approval deny <id>` denies with CLI actor
+- [x] `kavach serve --config` starts gateway (blocks until shutdown)
+- [x] `--output json` outputs structured JSON
+- [x] Typed exit codes on all error conditions
+- [x] No secret/token logging
+- [x] 17 integration tests pass
+- [x] All 554 workspace tests pass
+- [x] Zero clippy warnings
+- [x] Zero cargo doc warnings
+- [x] docs/implementation-state.md updated
+- [x] docs/agent-handoff.md updated
 
 ## Next Steps
-- HTTP gateway
 - MCP adapter
-- CLI expansion
 - Local dashboard
 
-## Approval Known Limitations
-- Cross-node coordination not supported; single-process SQLite only
-- Token delivery is caller's responsibility (no built-in out-of-band channel)
-- Entropy source is OS-dependent (getrandom syscall wrapper)
-- See `docs/approvals.md` for full documentation
+## Known CLI Limitations
+- Approval commands require a config file with audit database path
+- Approval commands act as "kavach-cli" actor (not configurable)
+- No interactive approval workflow (approve/deny via direct arguments only)
+- No TLS support (localhost-only gateway)
+- No distributed coordination

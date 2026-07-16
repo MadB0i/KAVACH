@@ -1,6 +1,6 @@
 [package]
-name = "kavach-cli"
-description = "Command-line interface for the KAVACH security runtime"
+name = "kavach-mcp"
+description = "MCP security adapter for the KAVACH security runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,34 +10,20 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-[[bin]]
-name = "kavach"
-path = "src/main.rs"
-
 [dependencies]
 kavach-core = { workspace = true }
+kavach-runtime = { workspace = true }
 kavach-policy = { workspace = true }
 kavach-config = { workspace = true }
-kavach-runtime = { workspace = true }
-kavach-gateway = { workspace = true }
-kavach-audit = { workspace = true }
-kavach-approval = { workspace = true }
-kavach-enforcement = { workspace = true }
-kavach-redaction = { workspace = true }
 
-clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-chrono = { workspace = true }
+uuid = { workspace = true }
 hex = { workspace = true }
-tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
-assert_cmd = "2"
-predicates = "3"
 tempfile = "3"
 
 [lints]
