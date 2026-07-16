@@ -8,6 +8,7 @@ members = [
     "crates/kavach-runtime",
     "crates/kavach-enforcement",
     "crates/kavach-redaction",
+    "crates/kavach-audit",
 ]
 
 [workspace.package]
@@ -27,8 +28,14 @@ kavach-policy = { path = "crates/kavach-policy", version = "0.1.0" }
 kavach-config = { path = "crates/kavach-config", version = "0.1.0" }
 kavach-runtime = { path = "crates/kavach-runtime", version = "0.1.0" }
 kavach-enforcement = { path = "crates/kavach-enforcement", version = "0.1.0" }
+kavach-redaction = { path = "crates/kavach-redaction", version = "0.1.0" }
 
 regex = "1"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
