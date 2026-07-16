@@ -21,7 +21,7 @@ kavach-redaction = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros"] }
 tower = { version = "0.4", features = ["limit", "timeout"] }
-tower-http = { version = "0.5", features = ["cors", "limit", "set-header", "sensitive-headers"] }
+tower-http = { version = "0.5", features = ["cors", "fs", "limit", "set-header", "sensitive-headers"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

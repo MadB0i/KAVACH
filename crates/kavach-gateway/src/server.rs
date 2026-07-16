@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv6Addr};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -136,7 +137,26 @@ impl GatewayBuilder {
         let app = Router::new()
             .route("/health", get(health::health))
             .route("/ready", get(health::ready))
-            .nest("/api", api_routes)
+            .nest("/api", api_routes);
+
+        // Serve dashboard static files at /dashboard/.
+        let dashboard_path = PathBuf::from("dashboard/dist");
+        let app = {
+            use axum::routing::get_service;
+            use tower_http::services::fs::ServeDir;
+            let serve_dir = ServeDir::new(&dashboard_path).append_index_html_on_directories(true);
+            app.route(
+                "/dashboard/*path",
+                get_service(serve_dir).handle_error(|e| async move {
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("static file error: {e}"),
+                    )
+                }),
+            )
+        };
+
+        let app = app
             .with_state(state.clone())
             .layer(middleware::from_fn(rid_mw::inject_request_id))
             .layer(SetResponseHeaderLayer::overriding(
