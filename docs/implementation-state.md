@@ -414,7 +414,65 @@ cargo doc --workspace --no-deps                      PASS
 cargo bench --workspace --no-run                     PASS
 ```
 
-## Phase 15: Working Examples & End-to-End Demo — COMPLETE (6 example binaries, 10/10 scenarios)
+## Phase 17: Cross-Platform CI & Repository Security Automation — COMPLETE
+
+### CI Workflows
+| Workflow | Trigger | Matrix | Key Steps |
+|----------|---------|--------|-----------|
+| `ci.yml` | push/PR to main | Windows, Ubuntu, macOS | fmt, check, clippy, test, doc, bench, dashboard (lint/test/build) |
+| `security.yml` | push/PR to main + weekly | Ubuntu | cargo-deny, cargo audit, npm audit, dependency review |
+| `codeql.yml` | push/PR to main + weekly | Ubuntu | CodeQL for Rust + JavaScript/TypeScript |
+| `fuzz.yml` | weekly Sunday + manual | Ubuntu (nightly) | 7 cargo-fuzz targets (60s each) |
+| `release.yml` | tag v* | Windows, Ubuntu, macOS | Build release, SHA-256 checksums, upload artifacts |
+
+### CI Design
+- **Matrix**: Windows, Ubuntu, macOS for Rust and dashboard jobs
+- **Dependency caching**: cargo registry/git/target + npm via setup-node
+- **Minimal permissions**: `contents: read` for CI, `security-events: write` for security workflows
+- **Concurrency cancellation**: in-progress runs cancelled for non-main branches
+- **Action versions pinned**: `actions/checkout@v4`, `dtolnay/rust-toolchain@stable`, `actions/cache@v4`, `actions/setup-node@v4`, `taiki-e/install-action@v2`, `github/codeql-action@v3`, `actions/dependency-review-action@v4`, `actions/upload-artifact@v4`
+- **No exposed tokens**: no secrets or tokens in workflow files
+- **No broad permissions**: each workflow has minimal `permissions:` block
+
+### Security Automation
+| Tool | Config | Trigger |
+|------|--------|---------|
+| cargo-deny | `deny.toml` (license, ban, source policies) | push/PR + weekly |
+| cargo audit | — | push/PR + weekly |
+| npm audit | — | push/PR + weekly |
+| Dependency Review | `fail-on-severity: high` | PR only |
+| CodeQL | Rust + JavaScript/TypeScript | push/PR + weekly |
+
+### Repository Configuration
+- `.gitattributes` — LF line endings for all text files
+- `.github/dependabot.yml` — weekly updates for cargo, npm, github-actions
+- `.github/PULL_REQUEST_TEMPLATE.md` — checklist matching CI commands
+- `.github/ISSUE_TEMPLATE/bug_report.md` — structured bug report
+- `.github/ISSUE_TEMPLATE/feature_request.md` — structured feature request
+- `.github/CODEOWNERS` — placeholder (set valid owner before use)
+- `deny.toml` — cargo-deny license, ban, and source policies
+
+### Release Workflow
+- Triggered by `v*` tag push
+- Builds on Windows, Ubuntu, macOS
+- Produces SHA-256 checksummed `kavach-<target>` binary artifacts
+- Does not publish automatically (manual release creation)
+
+### Verification
+```
+cargo fmt --all -- --check                          PASS
+cargo check --workspace --all-targets --all-features PASS
+cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
+cargo test --workspace --all-features                PASS (631)
+cargo doc --workspace --no-deps                      PASS
+cargo bench --workspace --no-run                     PASS
+npm --prefix dashboard run lint                      PASS (zero warnings)
+npm --prefix dashboard run test                      PASS (38)
+npm --prefix dashboard run build                     PASS
+cargo deny check                                     SKIP (not installed locally)
+cargo audit                                          SKIP (not installed locally)
+Workflow YAML syntax                                 PASS (6/6 valid)
+```
 
 ### Examples Architecture
 - `examples/kavach-examples/` — new workspace member with 6 standalone Rust binaries
@@ -476,20 +534,24 @@ cargo bench --workspace --no-run                     PASS
 
 ## Verification
 ```
-cargo fmt --all                          PASS
+cargo fmt --all -- --check                          PASS
 cargo check --workspace --all-targets --all-features  PASS
-cargo test --workspace --all-features    PASS (614)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
-cargo doc --workspace --no-deps          PASS
-npm run lint (dashboard)                 PASS (zero warnings)
-npm run test (dashboard)                 PASS (38)
-npm run build (dashboard)                PASS
-examples/basic-policy (cargo run)        PASS (6/6)
-examples/guarded-filesystem (cargo run)  PASS (3/3)
-examples/guarded-command (cargo run)     PASS (4/4)
-examples/guarded-network (cargo run)     PASS (3/3)
-examples/approval-flow (cargo run)       PASS (6/6)
-examples/demo-agent (cargo run)          PASS (10/10)
+cargo test --workspace --all-features                PASS (631)
+cargo doc --workspace --no-deps                      PASS
+cargo bench --workspace --no-run                     PASS
+npm --prefix dashboard run lint                      PASS (zero warnings)
+npm --prefix dashboard run test                      PASS (38)
+npm --prefix dashboard run build                     PASS
+cargo deny check                                     SKIP (not installed locally)
+cargo audit                                          SKIP (not installed locally)
+Workflow YAML syntax                                 PASS (6/6 valid)
+examples/basic-policy (cargo run)                    PASS (6/6)
+examples/guarded-filesystem (cargo run)              PASS (3/3)
+examples/guarded-command (cargo run)                 PASS (4/4)
+examples/guarded-network (cargo run)                 PASS (3/3)
+examples/approval-flow (cargo run)                   PASS (6/6)
+examples/demo-agent (cargo run)                      PASS (10/10)
 
 ## Platform Limitations
 - Loopback blocked by default; local test server integration tests use `with_allow_loopback(true)` override

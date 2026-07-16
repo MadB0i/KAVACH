@@ -1,0 +1,9 @@
+# Normalize line endings to LF for all text files
+* text=auto eol=lf
+
+# Binary files should not be modified
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.wasm binary

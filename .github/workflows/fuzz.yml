@@ -1,0 +1,66 @@
+# Fuzz workflow — runs cargo-fuzz targets on a schedule using nightly Rust
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "0 6 * * 0" # weekly Sunday 06:00 UTC
+  workflow_dispatch: # allow manual trigger
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Restore cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: fuzz-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            fuzz-
+
+      - name: Fuzz ToolRequest JSON
+        run: cargo fuzz run fuzz_tool_request -- -max_total_time=60
+
+      - name: Fuzz policy TOML
+        run: cargo fuzz run fuzz_policy_toml -- -max_total_time=60
+
+      - name: Fuzz path normalization
+        run: cargo fuzz run fuzz_path_normalization -- -max_total_time=60
+
+      - name: Fuzz network input
+        run: cargo fuzz run fuzz_network_input -- -max_total_time=60
+
+      - name: Fuzz redaction input
+        run: cargo fuzz run fuzz_redaction_input -- -max_total_time=60
+
+      - name: Fuzz audit event
+        run: cargo fuzz run fuzz_audit_event -- -max_total_time=60
+
+      - name: Fuzz MCP JSON-RPC
+        run: cargo fuzz run fuzz_mcp_jsonrpc -- -max_total_time=60
