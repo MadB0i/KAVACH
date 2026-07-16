@@ -16,6 +16,7 @@
 //! - Bounded read/write sizes and directory entry counts
 
 pub mod command;
+pub mod network;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

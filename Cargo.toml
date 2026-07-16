@@ -35,6 +35,7 @@ clap = { version = "4", features = ["derive", "color", "wrap_help"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 globset = "0.4"
+ureq = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
