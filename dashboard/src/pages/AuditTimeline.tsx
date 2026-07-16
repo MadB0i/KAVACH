@@ -1,9 +1,10 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { getAuditEvents } from '../api';
 import type { AuditEvent } from '../types';
+import PageHeader from '../components/PageHeader';
+import EmptyState from '../components/EmptyState';
 import LoadingState from '../components/LoadingState';
 import ErrorState from '../components/ErrorState';
-import EmptyState from '../components/EmptyState';
 import StatusBadge from '../components/StatusBadge';
 
 const PAGE_SIZE = 25;
@@ -21,6 +22,8 @@ const categoryVariant: Record<string, 'success' | 'error' | 'warning' | 'info'> 
 
 export default function AuditTimeline() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +34,7 @@ export default function AuditTimeline() {
     if (!append) setLoading(true);
     else setLoadingMore(true);
     try {
-      const after = append && events.length > 0 ? events[events.length - 1]!.sequence : undefined;
+      const after = append && eventsRef.current.length > 0 ? eventsRef.current[eventsRef.current.length - 1]!.sequence : undefined;
       const data = await getAuditEvents({
         after,
         limit: PAGE_SIZE,
@@ -50,13 +53,13 @@ export default function AuditTimeline() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [categoryFilter, requestIdFilter, events]);
+  }, [categoryFilter, requestIdFilter]);
 
   useEffect(() => {
     fetchEvents();
     const interval = setInterval(() => fetchEvents(), 10000);
     return () => clearInterval(interval);
-  }, [categoryFilter, requestIdFilter]);
+  }, [fetchEvents]);
 
   const getVariant = (ev: AuditEvent): 'success' | 'error' | 'warning' | 'info' => {
     const key = (ev.decision || ev.category || '').toLowerCase();
@@ -68,7 +71,10 @@ export default function AuditTimeline() {
 
   return (
     <div className="page">
-      <h2 className="page__title">Audit Timeline</h2>
+      <PageHeader
+        title="Audit Timeline"
+        subtitle={`${events.length} event${events.length !== 1 ? 's' : ''}`}
+      />
 
       <div className="filter-bar">
         <div className="form-group">
@@ -112,12 +118,14 @@ export default function AuditTimeline() {
               <div className="timeline__content">
                 <div className="timeline__header">
                   <span className="timeline__seq">#{ev.sequence}</span>
-                  <span className="timeline__time">{ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '?'}</span>
+                  <span className="timeline__time">
+                    {ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '?'}
+                  </span>
                   <StatusBadge variant={getVariant(ev)} label={ev.decision || ev.category || 'event'} />
                 </div>
                 <div className="timeline__details">
-                  <span><strong>Request:</strong> <code>{ev.request_id || '-'}</code></span>
-                  <span><strong>Operation:</strong> {ev.operation || '-'}</span>
+                  <span><strong>Request:</strong> <code>{ev.request_id || '\u2014'}</code></span>
+                  <span><strong>Operation:</strong> {ev.operation || '\u2014'}</span>
                   {ev.agent_id && <span><strong>Agent:</strong> {ev.agent_id}</span>}
                 </div>
                 {ev.summary && <p className="timeline__summary">{ev.summary}</p>}

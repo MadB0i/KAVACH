@@ -1,8 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getAuditEvents } from '../api';
+import PageHeader from '../components/PageHeader';
+import DataTable from '../components/DataTable';
+import EmptyState from '../components/EmptyState';
 import LoadingState from '../components/LoadingState';
 import ErrorState from '../components/ErrorState';
-import EmptyState from '../components/EmptyState';
 
 interface AgentInfo {
   agent_id: string;
@@ -59,32 +61,29 @@ export default function AgentsSessions() {
 
   return (
     <div className="page">
-      <h2 className="page__title">Agents & Sessions</h2>
-      <p className="page__subtitle">Agent activity derived from audit events</p>
+      <PageHeader
+        title="Agents"
+        subtitle="Agent activity derived from audit events"
+      />
 
       {agents.length === 0 ? (
-        <EmptyState icon={'\u263C'} title="No Agents Found" description="No agent activity has been recorded in recent audit events." />
+        <EmptyState
+          icon={'\u25CB'}
+          title="No Agents Found"
+          description="No agent activity has been recorded in recent audit events."
+        />
       ) : (
-        <div className="table-container">
-          <table className="table" role="table">
-            <thead>
-              <tr>
-                <th>Agent ID</th>
-                <th>Total Requests</th>
-                <th>Last Activity</th>
-              </tr>
-            </thead>
-            <tbody>
-              {agents.map((agent) => (
-                <tr key={agent.agent_id}>
-                  <td className="cell-mono">{agent.agent_id}</td>
-                  <td>{agent.total_requests}</td>
-                  <td>{agent.last_activity ? new Date(agent.last_activity).toLocaleString() : 'Unknown'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          columns={[
+            { key: 'agent_id', header: 'Agent ID', className: 'cell-mono', render: (a) => a.agent_id },
+            { key: 'requests', header: 'Requests', render: (a) => a.total_requests },
+            { key: 'last', header: 'Last Activity', render: (a) => a.last_activity ? new Date(a.last_activity).toLocaleString() : 'Unknown' },
+          ]}
+          data={agents}
+          keyField={(a) => a.agent_id}
+          emptyTitle="No Agents Found"
+          emptyDescription="No agent activity recorded in recent audit events."
+        />
       )}
     </div>
   );

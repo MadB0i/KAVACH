@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getStatus, getPolicies, getReady } from '../api';
 import type { StatusInfo, PolicyInfo, ReadyStatus } from '../types';
+import PageHeader from '../components/PageHeader';
+import SectionCard from '../components/SectionCard';
 import LoadingState from '../components/LoadingState';
 import ErrorState from '../components/ErrorState';
 
@@ -35,10 +37,9 @@ export default function ConfigSummary() {
 
   return (
     <div className="page">
-      <h2 className="page__title">Configuration Summary</h2>
+      <PageHeader title="Configuration Summary" />
 
-      <div className="section">
-        <h3 className="section__title">Service Info</h3>
+      <SectionCard title="Service Info">
         <div className="config-block">
           <div className="config-row">
             <span className="config-row__key">Service</span>
@@ -55,41 +56,46 @@ export default function ConfigSummary() {
           <div className="config-row">
             <span className="config-row__key">Uptime</span>
             <span className="config-row__value">
-              {statusInfo?.uptime !== undefined ? `${Math.floor(statusInfo.uptime / 3600)}h ${Math.floor((statusInfo.uptime % 3600) / 60)}m` : '?'}
+              {statusInfo?.uptime !== undefined
+                ? `${Math.floor(statusInfo.uptime / 3600)}h ${Math.floor((statusInfo.uptime % 3600) / 60)}m`
+                : '?'}
             </span>
           </div>
         </div>
-      </div>
+      </SectionCard>
 
-      <div className="section">
-        <h3 className="section__title">Policies ({policies.length})</h3>
+      <SectionCard title={`Policies (${policies.length})`}>
         <div className="config-block">
-          {policies.map((p) => (
-            <div key={p.id} className="config-row">
-              <span className="config-row__key">{p.name || p.id}</span>
-              <span className="config-row__value">{p.rule_count ?? '?'} rules, effect: {p.default_effect || '?'}</span>
-            </div>
-          ))}
-          {policies.length === 0 && <p className="config-empty">No policies loaded</p>}
+          {policies.length === 0 ? (
+            <div className="config-empty">No policies loaded</div>
+          ) : (
+            policies.map((p) => (
+              <div key={p.id} className="config-row">
+                <span className="config-row__key">{p.name || p.id}</span>
+                <span className="config-row__value">
+                  {p.rule_count ?? '?'} rules, effect: {p.default_effect || '?'}
+                </span>
+              </div>
+            ))
+          )}
         </div>
-      </div>
+      </SectionCard>
 
       {ready && ready.adapters && (
-        <div className="section">
-          <h3 className="section__title">Adapter Status</h3>
+        <SectionCard title="Adapter Status">
           <div className="config-block">
             {Object.entries(ready.adapters).map(([name, status]) => (
               <div key={name} className="config-row">
                 <span className="config-row__key">{name}</span>
-                <span className="config-row__value config-row__value--mono">{String(status)}</span>
+                <span className="config-row__value">{String(status)}</span>
               </div>
             ))}
           </div>
-        </div>
+        </SectionCard>
       )}
 
       <div className="config-note">
-        <p>Full configuration is managed server-side. This dashboard displays derived information from available API endpoints.</p>
+        Full configuration is managed server-side. This dashboard displays derived information from available API endpoints.
       </div>
     </div>
   );

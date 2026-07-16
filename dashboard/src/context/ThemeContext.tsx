@@ -1,12 +1,5 @@
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
-
-interface ThemeContextValue {
-  theme: 'light' | 'dark';
-  isDark: boolean;
-  toggleTheme: () => void;
-}
-
-const ThemeContext = createContext<ThemeContextValue | null>(null);
+import { useState, useCallback, useEffect, type ReactNode } from 'react';
+import { ThemeContext } from './useTheme';
 
 function getInitialTheme(): 'light' | 'dark' {
   const stored = localStorage.getItem('kavach-theme');
@@ -32,10 +25,4 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       {children}
     </ThemeContext.Provider>
   );
-}
-
-export function useTheme(): ThemeContextValue {
-  const ctx = useContext(ThemeContext);
-  if (!ctx) throw new Error('useTheme must be used within ThemeProvider');
-  return ctx;
 }

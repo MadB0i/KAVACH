@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getPolicies, reloadPolicies } from '../api';
 import type { PolicyInfo } from '../types';
+import PageHeader from '../components/PageHeader';
+import EmptyState from '../components/EmptyState';
 import LoadingState from '../components/LoadingState';
 import ErrorState from '../components/ErrorState';
-import EmptyState from '../components/EmptyState';
 import ConfirmDialog from '../components/ConfirmDialog';
 import StatusBadge from '../components/StatusBadge';
 
@@ -13,6 +14,7 @@ export default function Policies() {
   const [error, setError] = useState<string | null>(null);
   const [showReload, setShowReload] = useState(false);
   const [reloadPaths, setReloadPaths] = useState('');
+  const [reloading, setReloading] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const fetchPolicies = useCallback(async () => {
@@ -38,6 +40,7 @@ export default function Policies() {
   };
 
   const handleReload = async () => {
+    setReloading(true);
     try {
       const paths = reloadPaths.split('\n').map((s) => s.trim()).filter(Boolean);
       await reloadPolicies(paths);
@@ -47,6 +50,8 @@ export default function Policies() {
       fetchPolicies();
     } catch (err) {
       showToast('error', err instanceof Error ? err.message : 'Failed to reload policies');
+    } finally {
+      setReloading(false);
     }
   };
 
@@ -55,12 +60,15 @@ export default function Policies() {
 
   return (
     <div className="page">
-      <div className="page__header">
-        <h2 className="page__title">Policies</h2>
-        <button className="btn btn--primary" onClick={() => setShowReload(true)} aria-label="Reload policies">
-          Reload
-        </button>
-      </div>
+      <PageHeader
+        title="Policies"
+        subtitle={`${policies.length} policy document${policies.length !== 1 ? 's' : ''} loaded`}
+        actions={
+          <button className="btn btn--primary" onClick={() => setShowReload(true)} aria-label="Reload policies">
+            Reload
+          </button>
+        }
+      />
 
       {toast && (
         <div className={`toast toast--${toast.type}`} role="alert">
@@ -75,11 +83,11 @@ export default function Policies() {
           {policies.map((p) => (
             <div key={p.id} className="policy-card">
               <h3 className="policy-card__name">{p.name || p.id}</h3>
+              <div className="policy-card__id">{p.id}</div>
               <div className="policy-card__meta">
-                <span><strong>ID:</strong> <code>{p.id}</code></span>
                 <span><strong>Rules:</strong> {p.rule_count ?? '?'}</span>
                 <span>
-                  <strong>Effect:</strong>{' '}
+                  <strong>Default Effect:</strong>{' '}
                   <StatusBadge
                     variant={p.default_effect === 'allow' ? 'success' : p.default_effect === 'deny' ? 'error' : 'info'}
                     label={p.default_effect || 'unknown'}
@@ -95,11 +103,10 @@ export default function Policies() {
         open={showReload}
         title="Reload Policies"
         message="Enter the policy file paths to reload (one per line):"
-        confirmLabel="Reload"
+        confirmLabel={reloading ? 'Reloading...' : 'Reload'}
         confirmVariant="primary"
         onConfirm={handleReload}
         onCancel={() => { setShowReload(false); setReloadPaths(''); }}
-        showReason={false}
       >
         <div className="modal__field">
           <label htmlFor="reload-paths" className="modal__label">Policy Paths</label>

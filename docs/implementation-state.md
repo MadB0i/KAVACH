@@ -295,7 +295,72 @@ MCP Client → JSON-RPC → McpProxy → validate → convert to ToolRequest →
 | JSON output flag | 1 |
 | **Total** | **17** |
 
-### Test Summary
+### Phase 14: Dashboard UI — COMPLETE (38 frontend tests)
+
+### Dashboard Architecture
+- `dashboard/` — React + TypeScript + Vite SPA
+- 10 pages: Overview, Login, Live Requests, Pending Approvals, Audit Timeline, Audit Verification, Policies, Agents/Sessions, Security Warnings, System Health, Configuration
+- React Router v7 with protected routes, AuthContext, ThemeContext
+- CSS custom properties design system (~120 tokens): surface/background palette, semantic colors, radii, shadows, typography, transitions
+- Dark-first graphite/navy theme with full light theme variant via `[data-theme="light"]`
+- Vite dev proxy forwarding `/api`, `/health`, `/ready` to `http://127.0.0.1:7421`
+- Bearer token auth via `Authorization: Bearer <token>` header, token in `sessionStorage` only
+
+### Reusable Design Primitives (6 components)
+| Component | Purpose |
+|-----------|---------|
+| `PageHeader` | Title + subtitle + action slot |
+| `MetricCard` | Data-dense stat cards with loading/error/click states |
+| `DataTable` | Sticky-header generic table with column rendering |
+| `SectionCard` | Standardized section wrapper with header + body |
+| `LoadingSkeleton` | Skeleton text/title/card/row variants with pulse animation |
+| `DetailDrawer` | Slide-in right panel with overlay, ESC close, focus trap |
+
+### Global Shell
+- Collapsible sidebar (240px / 60px) with smooth width transition
+- Logo with gradient + "Zero-Trust Runtime" subtitle
+- Navigation with active state indicator (border + highlighted background)
+- Top command bar: page breadcrumb, global search, connection indicator, actor pill, theme toggle, logout
+- Mobile responsive drawer with overlay, breakpoints at 768px/480px
+
+### Pages — All Real API Data, No Mocks
+| Page | Key Features |
+|------|-------------|
+| Overview | Posture score, Allowed/Denied/Pending/Policies metric cards, system health strip, recent audit events, pending approvals snapshot |
+| Audit Verification | Compact summary row (chain status, event count, verified range, duration), errors table, re-verify with loading state |
+| Pending Approvals | DataTable with sticky headers, Approve/Deny confirmation modals with reason textarea |
+| Audit Timeline | Filter bar (category + request ID), timeline view with color-coded dots, load more pagination |
+| Live Requests | Pause/resume/clear controls, live pulse indicator, auto-scroll, max 100 events |
+| Policies | Policy card grid, reload modal with path textarea |
+| Login | Gradient logo, theme toggle in footer, loading button state |
+
+### States — All Covered
+- **Loading**: Spinner (page-level) and skeleton (section-level) components
+- **Empty**: Icon box + title + description for zero-data scenarios
+- **Error**: Icon + message + retry button, compact variant for metric cards
+- **Toast**: Success/error notifications with auto-dismiss
+
+### Test Coverage (38 frontend tests)
+| Category | Tests |
+|----------|-------|
+| API module (auth, errors, endpoints) | 14 |
+| Theme context (light/dark/toggle/persist) | 6 |
+| Auth flow (login/logout/token) | 3 |
+| Navigation (links, logout, theme, status) | 4 |
+| Audit timeline (events, empty, error) | 3 |
+| Pending approvals (display, approve, deny) | 4 |
+| Sensitive data (no secret leaks, localStorage check) | 4 |
+| **Total** | **38** |
+
+### Key Protections
+- **No localStorage for token**: token stored in `sessionStorage` only, verified by test
+- **No secrets in error messages**: API errors sanitized, error messages don't contain raw tokens
+- **Connection error sanitization**: network failures show "Connection failed. Is the API gateway running?" — no raw errors exposed
+- **Authorization**: exact entered Bearer token sent, no transformation
+- **CORS**: Vite dev proxy handles cross-origin in development; same-origin in production
+- **No fake data**: all pages consume real API endpoints only; empty/error states shown when data is unavailable
+
+## Test Summary
 | Crate | Tests |
 |-------|-------|
 | kavach-core | 43 |
@@ -308,7 +373,8 @@ MCP Client → JSON-RPC → McpProxy → validate → convert to ToolRequest →
 | kavach-gateway | 57 |
 | kavach-cli | 17 |
 | kavach-mcp | 16 |
-| **Total** | **614** |
+| dashboard | 38 |
+| **Total** | **652** |
 
 ## Verification
 ```
@@ -317,6 +383,9 @@ cargo check --workspace --all-targets --all-features  PASS
 cargo test --workspace --all-features    PASS (614)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
 cargo doc --workspace --no-deps          PASS
+npm run lint (dashboard)                 PASS (zero warnings)
+npm run test (dashboard)                 PASS (38)
+npm run build (dashboard)                PASS
 
 ## Platform Limitations
 - Loopback blocked by default; local test server integration tests use `with_allow_loopback(true)` override

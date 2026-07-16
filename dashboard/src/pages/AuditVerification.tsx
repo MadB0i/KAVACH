@@ -1,9 +1,12 @@
 import { useState, useCallback } from 'react';
 import { verifyAudit } from '../api';
 import type { AuditVerifyResult } from '../types';
+import PageHeader from '../components/PageHeader';
+import SectionCard from '../components/SectionCard';
+import DataTable from '../components/DataTable';
+import EmptyState from '../components/EmptyState';
 import LoadingState from '../components/LoadingState';
 import ErrorState from '../components/ErrorState';
-import EmptyState from '../components/EmptyState';
 import StatusBadge from '../components/StatusBadge';
 
 export default function AuditVerification() {
@@ -11,14 +14,19 @@ export default function AuditVerification() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasRun, setHasRun] = useState(false);
+  const [verifyTime, setVerifyTime] = useState<string | null>(null);
+  const [verifyDuration, setVerifyDuration] = useState<number | null>(null);
 
   const runVerification = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const start = Date.now();
     try {
       const data = await verifyAudit();
       setResult(data);
       setHasRun(true);
+      setVerifyTime(new Date().toLocaleTimeString());
+      setVerifyDuration(Date.now() - start);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verification failed');
     } finally {
@@ -29,68 +37,104 @@ export default function AuditVerification() {
   if (!hasRun && !loading && !error) {
     return (
       <div className="page">
-        <h2 className="page__title">Audit Chain Verification</h2>
-        <p className="page__subtitle">Verify the integrity of the audit event chain</p>
-        <button className="btn btn--primary" onClick={runVerification} aria-label="Run verification">
-          Run Verification
-        </button>
+        <PageHeader
+          title="Audit Chain Verification"
+          subtitle="Verify the cryptographic integrity of the audit event chain"
+        />
+        <div className="empty-state" style={{ padding: '64px 20px' }}>
+          <div className="empty-state__icon">{'\u2713'}</div>
+          <h3 className="empty-state__title">Ready to Verify</h3>
+          <p className="empty-state__description">
+            Run a verification to check that the audit chain has not been tampered with.
+          </p>
+          <button
+            className="btn btn--primary"
+            onClick={runVerification}
+            disabled={loading}
+            style={{ marginTop: 12 }}
+            aria-label="Run verification"
+          >
+            {loading ? 'Verifying...' : 'Run Verification'}
+          </button>
+        </div>
       </div>
     );
   }
 
-  if (loading) return <LoadingState message="Verifying audit chain..." />;
-  if (error) return <ErrorState title="Verification failed" message={error} onRetry={runVerification} />;
-
-  const errors = result?.errors || [];
-
   return (
     <div className="page">
-      <div className="page__header">
-        <h2 className="page__title">Audit Chain Verification</h2>
-        <button className="btn btn--primary" onClick={runVerification} aria-label="Re-verify">
-          Re-verify
-        </button>
-      </div>
+      <PageHeader
+        title="Audit Chain Verification"
+        subtitle="Verify the cryptographic integrity of the audit event chain"
+        actions={
+          <button
+            className={`btn btn--primary ${loading ? 'btn--loading' : ''}`}
+            onClick={runVerification}
+            disabled={loading}
+            aria-label="Re-verify"
+          >
+            {loading ? 'Verifying' : 'Re-verify'}
+          </button>
+        }
+      />
 
-      {result && (
-        <div className="verify-result">
-          <div className="verify-result__summary">
-            <StatusBadge
-              variant={result.chain_valid ? 'success' : 'error'}
-              label={result.chain_valid ? 'Chain is Valid' : 'Chain Integrity Error'}
-            />
-          </div>
-          <div className="verify-result__stats">
-            <p><strong>Event Count:</strong> {result.event_count ?? '?'}</p>
-            <p><strong>Verified To:</strong> {result.verified_to !== undefined ? `#${result.verified_to}` : '?'}</p>
-          </div>
-        </div>
-      )}
+      {loading && !result && <LoadingState message="Verifying audit chain..." />}
 
-      {errors.length === 0 ? (
-        <EmptyState icon={'\u2713'} title="No Errors" description="The audit chain is fully valid with no integrity errors." />
-      ) : (
-        <div className="section">
-          <h3 className="section__title">Verification Errors ({errors.length})</h3>
-          <div className="table-container">
-            <table className="table" role="table">
-              <thead>
-                <tr>
-                  <th>Sequence</th>
-                  <th>Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {errors.map((err, idx) => (
-                  <tr key={idx}>
-                    <td className="cell-mono">#{err.sequence}</td>
-                    <td className="cell-error">{err.error}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {error && <ErrorState title="Verification Failed" message={error} onRetry={runVerification} />}
+
+      {result && !loading && (
+        <>
+          <div className="verify-summary">
+            <div className="verify-summary__status">
+              <StatusBadge
+                variant={result.chain_valid ? 'success' : 'error'}
+                label={result.chain_valid ? 'Chain Valid' : 'Chain Tampered'}
+              />
+            </div>
+            <div className="verify-summary__stats">
+              <div className="verify-summary__stat">
+                <span className="verify-summary__stat-label">Events</span>
+                <span className="verify-summary__stat-value">{result.event_count ?? '\u2014'}</span>
+              </div>
+              <div className="verify-summary__stat">
+                <span className="verify-summary__stat-label">Verified Range</span>
+                <span className="verify-summary__stat-value">
+                  {result.verified_to !== undefined ? `1 \u2013 ${result.verified_to}` : '\u2014'}
+                </span>
+              </div>
+              <div className="verify-summary__stat">
+                <span className="verify-summary__stat-label">Last Verification</span>
+                <span className="verify-summary__stat-value">{verifyTime || '\u2014'}</span>
+              </div>
+              <div className="verify-summary__stat">
+                <span className="verify-summary__stat-label">Duration</span>
+                <span className="verify-summary__stat-value">
+                  {verifyDuration !== null ? `${verifyDuration}ms` : '\u2014'}
+                </span>
+              </div>
+            </div>
           </div>
-        </div>
+
+          <SectionCard title={`Verification Errors (${result.errors?.length || 0})`}>
+            {!result.errors || result.errors.length === 0 ? (
+              <EmptyState
+                icon={'\u2713'}
+                title="No Integrity Errors"
+                description="The audit chain is fully valid with no tampering detected."
+              />
+            ) : (
+              <DataTable
+                columns={[
+                  { key: 'sequence', header: 'Sequence', className: 'cell-mono', render: (err) => `#${err.sequence}` },
+                  { key: 'error', header: 'Error', className: 'cell-mono', render: (err) => err.error },
+                ]}
+                data={result.errors}
+                keyField={(err) => err.sequence}
+                compact
+              />
+            )}
+          </SectionCard>
+        </>
       )}
     </div>
   );

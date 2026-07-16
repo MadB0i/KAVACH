@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ThemeProvider, useTheme } from '../context/ThemeContext';
+import { ThemeProvider } from '../context/ThemeContext';
+import { useTheme } from '../context/useTheme';
 
 function TestComponent() {
   const { theme, toggleTheme, isDark } = useTheme();

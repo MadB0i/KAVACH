@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getApprovals, approveApproval, denyApproval } from '../api';
 import type { ApprovalRecord } from '../types';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
+import PageHeader from '../components/PageHeader';
+import DataTable from '../components/DataTable';
+import EmptyState from '../components/EmptyState';
 import LoadingState from '../components/LoadingState';
 import ErrorState from '../components/ErrorState';
-import EmptyState from '../components/EmptyState';
 import ConfirmDialog from '../components/ConfirmDialog';
 
 export default function PendingApprovals() {
@@ -43,7 +45,7 @@ export default function PendingApprovals() {
     setActionLoading(id);
     try {
       await approveApproval(id, actor || 'admin');
-      showToast('success', 'Approval granted successfully');
+      showToast('success', 'Approval granted');
       setConfirmAction(null);
       fetchApprovals();
     } catch (err) {
@@ -67,9 +69,9 @@ export default function PendingApprovals() {
     }
   };
 
-  const truncateSummary = (s?: string): string => {
-    if (!s) return '-';
-    if (s.length > 80) return s.slice(0, 77) + '...';
+  const truncate = (s?: string, max = 40): string => {
+    if (!s) return '\u2014';
+    if (s.length > max) return s.slice(0, max - 3) + '...';
     return s;
   };
 
@@ -78,7 +80,10 @@ export default function PendingApprovals() {
 
   return (
     <div className="page">
-      <h2 className="page__title">Pending Approvals</h2>
+      <PageHeader
+        title="Pending Approvals"
+        subtitle={`${approvals.length} approval${approvals.length !== 1 ? 's' : ''}`}
+      />
 
       {toast && (
         <div className={`toast toast--${toast.type}`} role="alert">
@@ -89,60 +94,47 @@ export default function PendingApprovals() {
       {approvals.length === 0 ? (
         <EmptyState icon={'\u2713'} title="No Pending Approvals" description="All requests have been processed." />
       ) : (
-        <div className="table-container">
-          <table className="table" role="table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Request ID</th>
-                <th>Operation</th>
-                <th>Resource</th>
-                <th>Summary</th>
-                <th>Created</th>
-                <th>Expires</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {approvals.map((a) => (
-                <tr key={a.id}>
-                  <td className="cell-mono" title={a.id}>{a.id.slice(0, 8)}...</td>
-                  <td className="cell-mono" title={a.request_id}>{a.request_id?.slice(0, 12)}...</td>
-                  <td>{a.operation || '-'}</td>
-                  <td>{a.resource || '-'}</td>
-                  <td title={a.summary}>{truncateSummary(a.summary)}</td>
-                  <td>{a.created_at ? new Date(a.created_at).toLocaleString() : '-'}</td>
-                  <td>{a.expires_at ? new Date(a.expires_at).toLocaleString() : '-'}</td>
-                  <td className="cell-actions">
-                    <button
-                      className="btn btn--success btn--sm"
-                      onClick={() => setConfirmAction({ type: 'approve', id: a.id, summary: a.summary || '' })}
-                      disabled={actionLoading === a.id}
-                      aria-label={`Approve approval ${a.id}`}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      className="btn btn--danger btn--sm"
-                      onClick={() => setConfirmAction({ type: 'deny', id: a.id, summary: a.summary || '' })}
-                      disabled={actionLoading === a.id}
-                      aria-label={`Deny approval ${a.id}`}
-                    >
-                      Deny
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          columns={[
+            { key: 'id', header: 'ID', className: 'cell-mono cell-truncate', render: (a) => a.id },
+            { key: 'request_id', header: 'Request ID', className: 'cell-mono cell-truncate', render: (a) => truncate(a.request_id, 16) },
+            { key: 'operation', header: 'Operation', render: (a) => a.operation || '\u2014' },
+            { key: 'resource', header: 'Resource', render: (a) => truncate(a.resource) },
+            { key: 'summary', header: 'Summary', className: 'cell-truncate', render: (a) => truncate(a.summary, 50) },
+            { key: 'created', header: 'Created', render: (a) => a.created_at ? new Date(a.created_at).toLocaleString() : '\u2014' },
+            { key: 'actions', header: 'Actions', className: 'cell-actions', render: (a) => (
+              <>
+                <button
+                  className="btn btn--success btn--sm"
+                  onClick={() => setConfirmAction({ type: 'approve', id: a.id, summary: a.summary || '' })}
+                  disabled={actionLoading === a.id}
+                  aria-label={`Approve ${a.id}`}
+                >
+                  Approve
+                </button>
+                <button
+                  className="btn btn--danger btn--sm"
+                  onClick={() => setConfirmAction({ type: 'deny', id: a.id, summary: a.summary || '' })}
+                  disabled={actionLoading === a.id}
+                  aria-label={`Deny ${a.id}`}
+                >
+                  Deny
+                </button>
+              </>
+            )},
+          ]}
+          data={approvals}
+          keyField={(a) => a.id}
+          emptyTitle="No Pending Approvals"
+          emptyDescription="All requests have been processed."
+        />
       )}
 
       {confirmAction?.type === 'approve' && (
         <ConfirmDialog
           open
           title="Approve Request"
-          message={`Are you sure you want to approve this request? ${confirmAction.summary ? `Summary: ${truncateSummary(confirmAction.summary)}` : ''}`}
+          message={`Are you sure you want to approve this request?${confirmAction.summary ? ` Summary: ${truncate(confirmAction.summary, 60)}` : ''}`}
           confirmLabel="Approve"
           confirmVariant="primary"
           onConfirm={() => handleApprove(confirmAction.id)}
@@ -154,7 +146,7 @@ export default function PendingApprovals() {
         <ConfirmDialog
           open
           title="Deny Request"
-          message={`Are you sure you want to deny this request? ${confirmAction.summary ? `Summary: ${truncateSummary(confirmAction.summary)}` : ''}`}
+          message={`Are you sure you want to deny this request?${confirmAction.summary ? ` Summary: ${truncate(confirmAction.summary, 60)}` : ''}`}
           confirmLabel="Deny"
           confirmVariant="danger"
           showReason

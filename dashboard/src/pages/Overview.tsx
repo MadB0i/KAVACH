@@ -1,19 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getApprovals, getAuditEvents, getPolicies, getHealth, getStatus } from '../api';
 import type { ApprovalRecord, AuditEvent, PolicyInfo, HealthStatus, StatusInfo } from '../types';
-import LoadingState from '../components/LoadingState';
-import ErrorState from '../components/ErrorState';
+import PageHeader from '../components/PageHeader';
+import MetricCard from '../components/MetricCard';
+import SectionCard from '../components/SectionCard';
 import StatusBadge from '../components/StatusBadge';
+import LoadingSkeleton from '../components/LoadingSkeleton';
 
 interface LoadInfo {
-  loading: boolean;
-  error: string | null;
-}
-
-interface StatCard {
-  title: string;
-  value: string | number;
-  variant: 'success' | 'warning' | 'error' | 'info';
   loading: boolean;
   error: string | null;
 }
@@ -29,6 +23,7 @@ export default function Overview() {
     audit: { loading: true, error: null },
     policies: { loading: true, error: null },
     health: { loading: true, error: null },
+    status: { loading: true, error: null },
   });
 
   const fetchAll = useCallback(async () => {
@@ -37,6 +32,7 @@ export default function Overview() {
       { key: 'audit', fn: getAuditEvents({ limit: 5 }), setter: setAuditEvents },
       { key: 'policies', fn: getPolicies(), setter: setPolicies },
       { key: 'health', fn: getHealth(), setter: setHealth },
+      { key: 'status', fn: getStatus(), setter: setStatusInfo },
     ];
     for (const f of fetches) {
       setLoadState((prev) => ({ ...prev, [f.key]: { loading: true, error: null } }));
@@ -45,14 +41,11 @@ export default function Overview() {
         (f.setter as (d: unknown) => void)(data);
         setLoadState((prev) => ({ ...prev, [f.key]: { loading: false, error: null } }));
       } catch (err) {
-        setLoadState((prev) => ({ ...prev, [f.key]: { loading: false, error: err instanceof Error ? err.message : 'Unknown error' } }));
+        setLoadState((prev) => ({
+          ...prev,
+          [f.key]: { loading: false, error: err instanceof Error ? err.message : 'Unknown error' },
+        }));
       }
-    }
-    try {
-      const si = await getStatus();
-      setStatusInfo(si);
-    } catch {
-      // silent
     }
   }, []);
 
@@ -62,93 +55,159 @@ export default function Overview() {
     return () => clearInterval(interval);
   }, [fetchAll]);
 
-  const ls = loadState as Record<string, LoadInfo>;
-  const statCards: StatCard[] = [
-    { title: 'Active Approvals', value: approvals.length, variant: approvals.length > 0 ? 'warning' : 'success', loading: ls.approvals?.loading ?? true, error: ls.approvals?.error ?? null },
-    { title: 'Recent Audit Events', value: auditEvents.length, variant: 'info', loading: ls.audit?.loading ?? true, error: ls.audit?.error ?? null },
-    { title: 'Policies Loaded', value: policies.length, variant: policies.length > 0 ? 'success' : 'warning', loading: ls.policies?.loading ?? true, error: ls.policies?.error ?? null },
-    { title: 'System Health', value: health?.status || 'Unknown', variant: health?.status === 'ok' || health?.status === 'healthy' ? 'success' : 'error', loading: ls.health?.loading ?? true, error: ls.health?.error ?? null },
-  ];
+  const ls = loadState;
 
-  const getHealthVariant = (s?: string): 'success' | 'error' => (s === 'ok' || s === 'healthy') ? 'success' : 'error';
-  const getHealthLabel = (s?: string) => s || 'Unknown';
+  const allowedCount = auditEvents.filter((e) => e.decision === 'allow' || e.decision === 'allowed').length;
+  const deniedCount = auditEvents.filter((e) => e.decision === 'deny' || e.decision === 'denied').length;
+  const pendingCount = approvals.filter((a) => !a.status || a.status === 'pending').length;
+  const healthOk = health?.status === 'ok' || health?.status === 'healthy';
+
+  const getHealthVariant = (s?: string): 'success' | 'error' | 'info' => {
+    if (!s) return 'info';
+    const v = s.toLowerCase();
+    if (v === 'ok' || v === 'healthy' || v === 'connected') return 'success';
+    if (v === 'error' || v === 'down') return 'error';
+    return 'info';
+  };
+
+  const getHealthLabel = (s?: string) => s || '\u2014';
 
   return (
     <div className="page">
-      <h2 className="page__title">Overview</h2>
-      {statusInfo && (
-        <p className="page__subtitle">
-          {statusInfo.service} v{statusInfo.version || '?'} {'\u2014'} Uptime: {statusInfo.uptime !== undefined ? `${Math.floor(statusInfo.uptime / 60)}m` : '?'}
-        </p>
-      )}
+      <PageHeader
+        title="Overview"
+        subtitle={
+          statusInfo
+            ? `${statusInfo.service} v${statusInfo.version || '?'} \u2014 Uptime: ${statusInfo.uptime !== undefined ? `${Math.floor(statusInfo.uptime / 60)}m` : '?'}`
+            : undefined
+        }
+      />
 
-      <div className="stat-grid">
-        {statCards.map((card) => (
-          <div key={card.title} className="stat-card">
-            <h3 className="stat-card__title">{card.title}</h3>
-            {card.loading ? (
-              <LoadingState compact message="" />
-            ) : card.error ? (
-              <ErrorState title="Error" message={card.error} />
-            ) : (
-              <div className="stat-card__value">
-                <StatusBadge variant={card.variant} label={String(card.value)} />
-              </div>
-            )}
-          </div>
-        ))}
+      <div className="metric-grid">
+        <MetricCard
+          label="Posture"
+          value={healthOk ? 'Healthy' : 'Unhealthy'}
+          variant={healthOk ? 'success' : 'error'}
+          loading={ls.health?.loading}
+          error={ls.health?.error}
+        />
+        <MetricCard
+          label="Allowed"
+          value={allowedCount}
+          variant="success"
+          loading={ls.audit?.loading}
+          error={ls.audit?.error}
+        />
+        <MetricCard
+          label="Denied"
+          value={deniedCount}
+          variant="error"
+          loading={ls.audit?.loading}
+          error={ls.audit?.error}
+        />
+        <MetricCard
+          label="Pending Approvals"
+          value={pendingCount}
+          variant={pendingCount > 0 ? 'warning' : 'success'}
+          loading={ls.approvals?.loading}
+          error={ls.approvals?.error}
+        />
+        <MetricCard
+          label="Policies"
+          value={policies.length}
+          variant={policies.length > 0 ? 'info' : 'warning'}
+          loading={ls.policies?.loading}
+          error={ls.policies?.error}
+        />
       </div>
 
-      <div className="section">
-        <h3 className="section__title">System Status</h3>
-        <div className="health-grid">
-          <div className="health-card">
-            <span className="health-card__label">API</span>
-            <StatusBadge variant={getHealthVariant(health?.status)} label={getHealthLabel(health?.status)} />
+      <SectionCard title="System Health" flush>
+        {ls.health?.loading ? (
+          <div style={{ padding: '16px 20px' }}>
+            <LoadingSkeleton type="row" count={5} />
           </div>
-          <div className="health-card">
-            <span className="health-card__label">Database</span>
-            <StatusBadge variant={getHealthVariant(health?.database)} label={getHealthLabel(health?.database)} />
-          </div>
-          <div className="health-card">
-            <span className="health-card__label">Policy Engine</span>
-            <StatusBadge variant={getHealthVariant(health?.policy_engine)} label={getHealthLabel(health?.policy_engine)} />
-          </div>
-          <div className="health-card">
-            <span className="health-card__label">Audit Store</span>
-            <StatusBadge variant={getHealthVariant(health?.audit_store)} label={getHealthLabel(health?.audit_store)} />
-          </div>
-          <div className="health-card">
-            <span className="health-card__label">Approval Store</span>
-            <StatusBadge variant={getHealthVariant(health?.approval_store)} label={getHealthLabel(health?.approval_store)} />
-          </div>
-        </div>
-      </div>
-
-      <div className="section">
-        <h3 className="section__title">Recent Activity</h3>
-        {ls.audit?.loading ? (
-          <LoadingState message="Loading audit events..." />
-        ) : ls.audit?.error ? (
-          <ErrorState title="Error" message={ls.audit.error} onRetry={fetchAll} />
-        ) : auditEvents.length === 0 ? (
-          <div className="empty-state"><p>No recent audit events</p></div>
         ) : (
-          <div className="audit-mini-list">
-            {auditEvents.map((ev) => (
-              <div key={`${ev.sequence}-${ev.timestamp}`} className="audit-mini-item">
-                <span className="audit-mini-item__time">{ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '?'}</span>
-                <StatusBadge
-                  variant={ev.decision === 'allow' || ev.decision === 'allowed' ? 'success' : ev.decision === 'deny' || ev.decision === 'denied' ? 'error' : 'info'}
-                  label={ev.decision || ev.category || 'event'}
-                />
-                <span className="audit-mini-item__op">{ev.operation || '-'}</span>
-                <span className="audit-mini-item__req">{ev.request_id || '-'}</span>
+          <div style={{ padding: '12px 20px', display: 'flex', flexWrap: 'wrap', gap: 20 }}>
+            {[
+              { label: 'API', status: health?.status },
+              { label: 'Database', status: health?.database },
+              { label: 'Policy Engine', status: health?.policy_engine },
+              { label: 'Audit Store', status: health?.audit_store },
+              { label: 'Approval Store', status: health?.approval_store },
+            ].map((s) => (
+              <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.8125rem' }}>
+                <span style={{ color: 'var(--color-text-muted)', fontWeight: 500, minWidth: 80 }}>{s.label}</span>
+                <StatusBadge variant={getHealthVariant(s.status)} label={getHealthLabel(s.status)} />
               </div>
             ))}
           </div>
         )}
-      </div>
+      </SectionCard>
+
+      <SectionCard title="Recent Activity">
+        {ls.audit?.loading ? (
+          <LoadingSkeleton type="row" count={5} />
+        ) : ls.audit?.error ? (
+          <div style={{ color: 'var(--color-error-text)', fontSize: '0.8125rem' }}>{ls.audit.error}</div>
+        ) : auditEvents.length === 0 ? (
+          <div style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem', textAlign: 'center', padding: 16 }}>
+            No recent audit events
+          </div>
+        ) : (
+          <div className="audit-mini-list">
+            {auditEvents.map((ev) => (
+              <div key={`${ev.sequence}-${ev.timestamp}`} className="audit-mini-item">
+                <span className="audit-mini-item__time">
+                  {ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '?'}
+                </span>
+                <StatusBadge
+                  variant={
+                    ev.decision === 'allow' || ev.decision === 'allowed'
+                      ? 'success'
+                      : ev.decision === 'deny' || ev.decision === 'denied'
+                        ? 'error'
+                        : 'info'
+                  }
+                  label={ev.decision || ev.category || 'event'}
+                />
+                <span className="audit-mini-item__op">{ev.operation || '\u2014'}</span>
+                <span className="audit-mini-item__req">{ev.request_id || '\u2014'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
+
+      <SectionCard title={`Pending Approvals (${pendingCount})`}>
+        {ls.approvals?.loading ? (
+          <LoadingSkeleton type="row" count={4} />
+        ) : approvals.filter((a) => !a.status || a.status === 'pending').length === 0 ? (
+          <div style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem', textAlign: 'center', padding: 16 }}>
+            All clear \u2014 no pending approvals
+          </div>
+        ) : (
+          <div className="audit-mini-list">
+            {approvals
+              .filter((a) => !a.status || a.status === 'pending')
+              .slice(0, 5)
+              .map((a) => (
+                <div key={a.id} className="audit-mini-item">
+                  <span className="audit-mini-item__time">
+                    {a.created_at ? new Date(a.created_at).toLocaleDateString() : '?'}
+                  </span>
+                  <StatusBadge variant="warning" label="pending" />
+                  <span className="audit-mini-item__op">{a.operation || '\u2014'}</span>
+                  <span
+                    className="audit-mini-item__req"
+                    title={a.summary || ''}
+                  >
+                    {a.summary ? (a.summary.length > 40 ? a.summary.slice(0, 37) + '...' : a.summary) : a.request_id}
+                  </span>
+                </div>
+              ))}
+          </div>
+        )}
+      </SectionCard>
     </div>
   );
 }

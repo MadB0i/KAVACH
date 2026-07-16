@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { getAuditEvents } from '../api';
 import type { AuditEvent } from '../types';
-import LoadingState from '../components/LoadingState';
+import PageHeader from '../components/PageHeader';
 import EmptyState from '../components/EmptyState';
+import LoadingState from '../components/LoadingState';
 import StatusBadge from '../components/StatusBadge';
 
 export default function LiveRequests() {
@@ -20,8 +21,7 @@ export default function LiveRequests() {
         setEvents((prev) => {
           const existingIds = new Set(prev.map((e) => `${e.sequence}-${e.timestamp}`));
           const newEvents = data.filter((e) => !existingIds.has(`${e.sequence}-${e.timestamp}`));
-          const combined = [...newEvents, ...prev].slice(0, maxEvents);
-          return combined;
+          return [...newEvents, ...prev].slice(0, maxEvents);
         });
       }
       setError(null);
@@ -63,24 +63,29 @@ export default function LiveRequests() {
 
   return (
     <div className="page">
-      <div className="page__header">
-        <h2 className="page__title">Live Requests</h2>
-        <div className="page__actions">
-          <button
-            className={`btn btn--sm ${paused ? 'btn--primary' : 'btn--ghost'}`}
-            onClick={() => setPaused(!paused)}
-            aria-label={paused ? 'Resume live updates' : 'Pause live updates'}
-          >
-            {paused ? '\u25B6 Resume' : '\u23F8 Pause'}
-          </button>
-          <button className="btn btn--ghost btn--sm" onClick={clearEvents} aria-label="Clear events">
-            Clear
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Live Requests"
+        subtitle={`${events.length} request${events.length !== 1 ? 's' : ''}`}
+        actions={
+          <>
+            <button
+              className={`btn btn--sm ${paused ? 'btn--primary' : 'btn--ghost'}`}
+              onClick={() => setPaused(!paused)}
+              aria-label={paused ? 'Resume' : 'Pause'}
+            >
+              {paused ? '\u25B6 Resume' : '\u23F8 Pause'}
+            </button>
+            <button className="btn btn--ghost btn--sm" onClick={clearEvents} aria-label="Clear events">
+              Clear
+            </button>
+          </>
+        }
+      />
 
       {error && <div className="toast toast--error" role="alert">{error}</div>}
-      {!paused && <p className="live-indicator"><span className="live-dot" aria-hidden="true" /> Live</p>}
+      {!paused && events.length > 0 && (
+        <p className="live-indicator"><span className="live-dot" aria-hidden="true" /> Live</p>
+      )}
 
       {events.length === 0 ? (
         <EmptyState icon={'\u25B6'} title="No Requests" description="Waiting for incoming requests..." />
@@ -91,10 +96,10 @@ export default function LiveRequests() {
               <span className="live-request-item__time">
                 {ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '?'}
               </span>
-              <code className="live-request-item__id" title={ev.request_id}>
-                {ev.request_id?.slice(0, 16) || '-'}
-              </code>
-              <span className="live-request-item__op">{ev.operation || '-'}</span>
+              <span className="live-request-item__id" title={ev.request_id}>
+                {ev.request_id ? ev.request_id.slice(0, 16) : '\u2014'}
+              </span>
+              <span className="live-request-item__op">{ev.operation || '\u2014'}</span>
               <StatusBadge variant={getVariant(ev)} label={ev.decision || ev.category || '?'} />
               <span className="live-request-item__summary" title={ev.summary}>
                 {ev.summary ? (ev.summary.length > 50 ? ev.summary.slice(0, 47) + '...' : ev.summary) : ''}
