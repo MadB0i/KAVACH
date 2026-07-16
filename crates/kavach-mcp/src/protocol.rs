@@ -1,3 +1,8 @@
+// JSON-RPC 2.0 and MCP protocol types matching the official specification.
+// Field naming follows the MCP spec (camelCase) for correct serialization.
+
+#![allow(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 
 /// JSON-RPC 2.0 request ID.
@@ -67,6 +72,7 @@ pub enum JsonRpcMessage {
 // ── MCP-specific types ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 pub struct Tool {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,6 +89,7 @@ pub struct CallToolRequestParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 pub struct CallToolResult {
     pub content: Vec<ToolContent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,6 +98,7 @@ pub struct CallToolResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(non_snake_case)]
 pub enum ToolContent {
     #[serde(rename = "text")]
     Text {
@@ -122,6 +130,7 @@ pub struct Annotations {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 pub struct InitializeResult {
     pub protocolVersion: String,
     pub capabilities: ServerCapabilities,
@@ -174,13 +183,12 @@ pub fn parse_message(json: &str) -> Result<JsonRpcMessage, JsonRpcErrorResponse>
         return Err(jsonrpc_error(None, PARSE_ERROR, "message too large"));
     }
 
-    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
-        jsonrpc_error(None, PARSE_ERROR, &format!("invalid JSON: {e}"))
-    })?;
+    let value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| jsonrpc_error(None, PARSE_ERROR, &format!("invalid JSON: {e}")))?;
 
-    let obj = value.as_object().ok_or_else(|| {
-        jsonrpc_error(None, PARSE_ERROR, "expected JSON object")
-    })?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| jsonrpc_error(None, PARSE_ERROR, "expected JSON object"))?;
 
     let has_id = obj.contains_key("id");
     let has_method = obj.contains_key("method");
@@ -188,25 +196,46 @@ pub fn parse_message(json: &str) -> Result<JsonRpcMessage, JsonRpcErrorResponse>
     let has_error = obj.contains_key("error");
 
     if !has_method && !has_result && !has_error {
-        return Err(jsonrpc_error(None, INVALID_REQUEST, "not a valid JSON-RPC message"));
+        return Err(jsonrpc_error(
+            None,
+            INVALID_REQUEST,
+            "not a valid JSON-RPC message",
+        ));
+    }
+
+    // Validate jsonrpc version when present.
+    if let Some(ver) = obj.get("jsonrpc").and_then(|v| v.as_str()) {
+        if ver != "2.0" {
+            return Err(jsonrpc_error(
+                None,
+                INVALID_REQUEST,
+                "jsonrpc version must be 2.0",
+            ));
+        }
+    } else {
+        return Err(jsonrpc_error(
+            None,
+            INVALID_REQUEST,
+            "missing jsonrpc version",
+        ));
     }
 
     if has_error {
-        serde_json::from_value::<JsonRpcError>(value).map(JsonRpcMessage::Error).map_err(|e| {
-            jsonrpc_error(None, PARSE_ERROR, &format!("invalid error message: {e}"))
-        })
+        serde_json::from_value::<JsonRpcError>(value)
+            .map(JsonRpcMessage::Error)
+            .map_err(|e| jsonrpc_error(None, PARSE_ERROR, &format!("invalid error message: {e}")))
     } else if has_result {
-        serde_json::from_value::<JsonRpcResponse>(value).map(JsonRpcMessage::Response).map_err(|e| {
-            jsonrpc_error(None, PARSE_ERROR, &format!("invalid response: {e}"))
-        })
+        serde_json::from_value::<JsonRpcResponse>(value)
+            .map(JsonRpcMessage::Response)
+            .map_err(|e| jsonrpc_error(None, PARSE_ERROR, &format!("invalid response: {e}")))
     } else if has_id {
-        serde_json::from_value::<JsonRpcRequest>(value).map(JsonRpcMessage::Request).map_err(|e| {
-            jsonrpc_error(None, PARSE_ERROR, &format!("invalid request: {e}"))
-        })
+        serde_json::from_value::<JsonRpcRequest>(value)
+            .map(JsonRpcMessage::Request)
+            .map_err(|e| jsonrpc_error(None, PARSE_ERROR, &format!("invalid request: {e}")))
     } else {
-        serde_json::from_value::<JsonRpcNotification>(value).map(JsonRpcMessage::Notification).map_err(|e| {
-            jsonrpc_error(None, PARSE_ERROR, &format!("invalid notification: {e}"))
-        })
+        serde_json::from_value::<JsonRpcNotification>(value)
+            .map(JsonRpcMessage::Notification)
+            .map_err(|e| jsonrpc_error(None, PARSE_ERROR, &format!("invalid notification: {e}")))
     }
 }
 

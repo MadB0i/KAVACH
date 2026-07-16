@@ -20,6 +20,7 @@ kavach-policy = { workspace = true }
 kavach-config = { workspace = true }
 kavach-runtime = { workspace = true }
 kavach-gateway = { workspace = true }
+kavach-mcp = { workspace = true }
 kavach-audit = { workspace = true }
 kavach-approval = { workspace = true }
 kavach-enforcement = { workspace = true }

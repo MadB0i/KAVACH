@@ -201,6 +201,53 @@ Last updated: 2026-07-16
 
 ## Phase 12: CLI — COMPLETE (17 tests)
 
+## Phase 13: MCP Security Adapter — COMPLETE (16 tests)
+
+### MCP Architecture
+- `kavach-mcp/` — new dedicated crate with protocol, transport, and proxy modules
+- `McpProxy` — intercepts MCP tool calls, evaluates via `KavachRuntime`, only forwards permitted calls
+- `McpProxyConfig` — server command, args, timeout, agent/session identity
+- `McpTransport` — stdio transport for line-delimited JSON-RPC messages
+- Full JSON-RPC 2.0 protocol validation: version check, unknown field rejection, size limits
+
+### Flow
+```
+MCP Client → JSON-RPC → McpProxy → validate → convert to ToolRequest → KavachRuntime::evaluate()
+   ↓ deny/approval-required → error response (never forwarded to MCP server)
+   ↓ permitted → forward to MCP server → redact response → return to client
+```
+
+### Key Protections
+- **No unguarded forwarding**: denied/approval-required calls never reach the MCP server
+- **Strict JSON-RPC validation**: rejects malformed JSON, wrong version, oversized messages (>1 MiB)
+- **Unknown field rejection**: all protocol structs use `#[serde(deny_unknown_fields)]`
+- **Response redaction**: Bearer tokens, API keys, secrets redacted from tool call responses
+- **Tool identity mapping**: each tool_name maps to `Operation::ToolInvoke` + `Resource::ExternalTool`
+- **Audit trail**: all evaluations create audit events (allowed and denied)
+- **Deterministic evaluation**: same policy + same request = same decision
+- **Runtime fail-closed**: any runtime error prevents tool call forwarding
+- **Cancellation forwarding**: `notifications/cancelled` propagated to MCP server
+- **No cloud dependency**: local only, stdio transport
+
+### Test Coverage (16 MCP adapter tests)
+| Category | Tests |
+|----------|-------|
+| Protocol: malformed/empty/oversized message rejection | 3 |
+| Protocol: invalid jsonrpc version | 1 |
+| Protocol: request without method | 1 |
+| Redaction: Bearer tokens | 1 |
+| Redaction: API keys | 1 |
+| Evaluate: allowed tool call (permitted) | 1 |
+| Evaluate: denied tool call (never forwarded) | 1 |
+| Evaluate: approval-required call (never forwarded) | 1 |
+| Evaluate: runtime failure fails closed | 1 |
+| Evaluate: deterministic repeated requests | 1 |
+| Tool identity: different tools produce correct evaluations | 1 |
+| Audit: allowed call creates event | 1 |
+| Audit: denied call creates event | 1 |
+| Timeout: default config value | 1 |
+| **Total** | **16** |
+
 ### CLI Architecture
 - `kavach-cli/` — binary crate with clap derive subcommands
 - 13 production commands backed by existing crates (no runtime/gateway duplication)
@@ -260,13 +307,14 @@ Last updated: 2026-07-16
 | kavach-approval | 56 |
 | kavach-gateway | 57 |
 | kavach-cli | 17 |
-| **Total** | **554** |
+| kavach-mcp | 16 |
+| **Total** | **614** |
 
 ## Verification
 ```
 cargo fmt --all                          PASS
 cargo check --workspace --all-targets --all-features  PASS
-cargo test --workspace --all-features    PASS (554)
+cargo test --workspace --all-features    PASS (614)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
 cargo doc --workspace --no-deps          PASS
 

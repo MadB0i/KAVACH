@@ -74,6 +74,12 @@ enum Commands {
         #[arg(short, long)]
         config: String,
     },
+    /// Start the MCP security adapter
+    Mcp {
+        /// Start the MCP adapter
+        #[command(subcommand)]
+        action: McpAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -141,6 +147,16 @@ enum AuditAction {
 }
 
 #[derive(Subcommand)]
+enum McpAction {
+    /// Start the MCP security adapter
+    Serve {
+        /// Path to config file
+        #[arg(short, long)]
+        config: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum ApprovalAction {
     /// List pending approvals
     List,
@@ -193,6 +209,18 @@ fn main() {
                 commands::approval::approve(&id, config.as_deref(), mode)
             }
             ApprovalAction::Deny { id } => commands::approval::deny(&id, config.as_deref(), mode),
+        },
+        Some(Commands::Mcp { action }) => match action {
+            McpAction::Serve { config } => {
+                let rt = tokio::runtime::Runtime::new();
+                match rt {
+                    Ok(runtime) => runtime.block_on(commands::mcp::run(&config, mode)),
+                    Err(e) => Err(CliError::new(
+                        ExitCode::InternalError,
+                        format!("runtime init failed: {e}"),
+                    )),
+                }
+            }
         },
         Some(Commands::Serve { config }) => {
             let rt = tokio::runtime::Runtime::new();

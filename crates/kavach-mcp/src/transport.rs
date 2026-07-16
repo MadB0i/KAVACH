@@ -1,3 +1,5 @@
+//! Stdio transport for MCP message I/O.
+
 use std::io::{self, BufRead, Write};
 use std::process::{Child, Command, Stdio};
 
@@ -12,10 +14,7 @@ pub struct McpTransport {
 
 impl McpTransport {
     /// Create a transport that reads/writes to the given streams.
-    pub fn new(
-        reader: Box<dyn io::Read + Send>,
-        writer: Box<dyn io::Write + Send>,
-    ) -> Self {
+    pub fn new(reader: Box<dyn io::Read + Send>, writer: Box<dyn io::Write + Send>) -> Self {
         Self {
             reader: io::BufReader::new(reader),
             writer,
@@ -32,12 +31,14 @@ impl McpTransport {
             .stderr(Stdio::inherit())
             .spawn()?;
 
-        let stdin = child.stdin.take().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "failed to capture stdin")
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "failed to capture stdout")
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "failed to capture stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "failed to capture stdout"))?;
 
         let transport = Self {
             reader: io::BufReader::new(Box::new(stdout)),
@@ -50,10 +51,27 @@ impl McpTransport {
 
     /// Send a JSON-RPC message.
     pub fn send(&mut self, msg: &JsonRpcMessage) -> Result<(), String> {
-        let json = protocol::serialize_message(msg).map_err(|e| format!("serialization error: {e}"))?;
+        let json =
+            protocol::serialize_message(msg).map_err(|e| format!("serialization error: {e}"))?;
         let line = format!("{json}\n");
-        self.writer.write_all(line.as_bytes()).map_err(|e| format!("write error: {e}"))?;
-        self.writer.flush().map_err(|e| format!("flush error: {e}"))?;
+        self.writer
+            .write_all(line.as_bytes())
+            .map_err(|e| format!("write error: {e}"))?;
+        self.writer
+            .flush()
+            .map_err(|e| format!("flush error: {e}"))?;
+        Ok(())
+    }
+
+    /// Send a raw JSON string as a line-delimited message.
+    pub fn send_raw(&mut self, json: &str) -> Result<(), String> {
+        let line = format!("{json}\n");
+        self.writer
+            .write_all(line.as_bytes())
+            .map_err(|e| format!("write error: {e}"))?;
+        self.writer
+            .flush()
+            .map_err(|e| format!("flush error: {e}"))?;
         Ok(())
     }
 

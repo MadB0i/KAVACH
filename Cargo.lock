@@ -887,6 +887,7 @@ dependencies = [
  "kavach-core",
  "kavach-enforcement",
  "kavach-gateway",
+ "kavach-mcp",
  "kavach-policy",
  "kavach-redaction",
  "kavach-runtime",
