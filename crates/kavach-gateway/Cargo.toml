@@ -20,7 +20,7 @@ kavach-redaction = { workspace = true }
 
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros"] }
-tower = { version = "0.4", features = ["limit", "timeout"] }
+tower = { version = "0.5", features = ["limit", "timeout"] }
 tower-http = { version = "0.5", features = ["cors", "fs", "limit", "set-header", "sensitive-headers"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -38,4 +38,4 @@ bytes = "1"
 
 [dev-dependencies]
 tempfile = "3"
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
