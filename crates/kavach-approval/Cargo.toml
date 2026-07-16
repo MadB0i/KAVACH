@@ -19,7 +19,7 @@ hex = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 rusqlite = { workspace = true }
-getrandom = "0.2"
+getrandom = "0.4"
 constant_time_eq = "0.3"
 serde_json = { workspace = true }
 
