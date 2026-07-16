@@ -3,69 +3,70 @@
 Last updated: 2026-07-16
 
 ## Current Task
-Phase 7 — Secret Detection and Redaction — COMPLETE (52 tests, 379 total).
+Phase 8 — Human Approval Broker — COMPLETE (56 tests, 435 total).
 
 ## Key Changes (This Session)
-- Created `crates/kavach-redaction/` — new workspace crate (8 source modules, 52 tests)
-- Implemented `Redactor` trait + `CompositeRedactor` with 8 detector types
-- Detectors: Bearer, JWT, PEM private keys, password/API-key assignments, GitHub tokens, AWS key IDs, exact secrets, entropy (optional)
-- `SecretContainer` — secret-protecting wrapper with custom Debug (reveals count only)
-- Integration helpers for error messages, tracing fields, command output, network bodies, headers, filesystem previews, approval summaries, audit metadata
-- Added `regex` to workspace dependencies
-- Created `docs/redaction.md` with architecture, detector details, limitations documentation
+- Created `crates/kavach-approval/` — new workspace crate (6 source modules, 56 tests)
+- Implemented `ApprovalBroker` trait + `SqliteApprovalBroker` with `AuditStore` integration
+- `SqliteApprovalStore` — SQLite-backed persistence (WAL, foreign keys, busy_timeout, migration support)
+- `ApprovalToken` — CSPRNG 256-bit bearer token, SHA-256 hashed at rest, constant-time verification, Debug/Display redacted
+- `ApprovalState` — 6-state machine: Pending → Approved → Consumed | Rejected | Expired | Cancelled
+- Request digest binding (SHA-256 of request_id + resource + action + subject) prevents token replay
+- Clock abstraction (`Clock` trait, `RealClock`, `FakeClock`) for testable time
+- Pending TTL (configurable, default 30min) + consumption window (5min after approval)
+- All state transitions inside `BEGIN IMMEDIATE` transactions for concurrency safety
+- Created `docs/approvals.md` with architecture, state machine diagram, token lifecycle, threat model
 
 ## Files Changed
-- `Cargo.toml` — added kavach-redaction to workspace members, added regex dependency
-- `crates/kavach-redaction/Cargo.toml` — new crate manifest
-- `crates/kavach-redaction/src/lib.rs` — crate root
-- `crates/kavach-redaction/src/types.rs` — core types, constants, SecretContainer
-- `crates/kavach-redaction/src/error.rs` — RedactionError, RedactionErrorKind
-- `crates/kavach-redaction/src/redactor.rs` — Redactor trait, CompositeRedactor, CompositeRedactorBuilder
-- `crates/kavach-redaction/src/helpers.rs` — integration helper functions
-- `crates/kavach-redaction/src/detectors/` — 8 detector modules + Detector trait
-- `docs/redaction.md` — new file
-- `docs/implementation-state.md` — updated with Phase 7
+- `Cargo.toml` — added kavach-approval to workspace members
+- `crates/kavach-approval/Cargo.toml` — new crate manifest with all deps + tempfile dev-dep
+- `crates/kavach-approval/src/lib.rs` — crate root, module decls, re-exports, 56 tests
+- `crates/kavach-approval/src/types.rs` — ApprovalState, ApprovalActor, ApprovalRequest, PendingApproval, ApprovalRecord, ConsumedApproval, ApprovalRow, ApprovalStoreConfig, validation constants
+- `crates/kavach-approval/src/error.rs` — ApprovalError, ApprovalErrorKind (23 variants), typed constructors
+- `crates/kavach-approval/src/token.rs` — ApprovalToken (generate, hash, verify_hash)
+- `crates/kavach-approval/src/clock.rs` — Clock trait, RealClock, FakeClock
+- `crates/kavach-approval/src/store.rs` — SqliteApprovalStore (pub(crate))
+- `crates/kavach-approval/src/broker.rs` — ApprovalBroker trait, SqliteApprovalBroker
+- `docs/approvals.md` — new file (full architecture and threat model documentation)
+- `docs/implementation-state.md` — updated with Phase 8
 - `docs/agent-handoff.md` — updated (this file)
 
 ## Commands Already Run (All Pass)
 ```
 cargo fmt --all                          PASS
-cargo test --workspace --all-features    PASS (379)
+cargo test --workspace --all-features    PASS (435)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
+cargo doc --workspace --no-deps          PASS
 ```
 
 ## Verification Checklist
-- [x] kavach-redaction crate scaffolded with Cargo.toml
-- [x] Redactor trait + CompositeRedactor with builder
-- [x] Bearer token detector
-- [x] JWT-like token detector (avoids version/filename false positives)
-- [x] PEM private key detector (RSA, EC, OpenSSH, DSA)
-- [x] Password/API-key assignment detector (30+ keys, case-insensitive)
-- [x] GitHub token detector
-- [x] AWS key ID detector
-- [x] Exact secret detector with SecretContainer (longest-match, limits)
-- [x] High-entropy detector (optional, disabled by default)
-- [x] Integration helpers (8 functions)
-- [x] 52 tests across all detectors and composite redactor
-- [x] Secret values never appear in Debug output
-- [x] Errors contain category/range only, not secret values
-- [x] Binary non-UTF-8 input returns UnsupportedBinaryInput
-- [x] Input size limit enforced (1 MiB)
-- [x] Thread-safe (Send + Sync)
+- [x] kavach-approval crate scaffolded with Cargo.toml
+- [x] ApprovalBroker trait + SqliteApprovalBroker with AuditStore integration
+- [x] SqliteApprovalStore with SQLite migrations (WAL, foreign keys, busy_timeout)
+- [x] ApprovalToken (256-bit CSPRNG, SHA-256 hash, constant-time verify, redacted debug)
+- [x] 6-state machine (Pending, Approved, Rejected, Expired, Consumed, Cancelled)
+- [x] State transition enforcement (no invalid transitions like Rejected → Approved)
+- [x] Request digest binding (SHA-256 of request_id + resource + action + subject)
+- [x] Pending TTL (30min default) + consumption window (5min)
+- [x] Clock abstraction (RealClock, FakeClock)
+- [x] All transitions in BEGIN IMMEDIATE transactions
+- [x] Duplicate active approval detection per request_id
+- [x] Validation: ID/actor/summary length limits
+- [x] Audit logging on every state transition
+- [x] 56 tests: DB migration, creation/dedup, token, transitions, expiry, concurrency, audit, restart, edge cases
+- [x] docs/approvals.md created
 - [x] Clippy zero warnings
-- [x] All 379 workspace tests pass
+- [x] All 435 workspace tests pass
+- [x] cargo doc successful
 
 ## Next Steps
-- Audit storage and tamper-evident chain (Phase 3 / Phase 8)
-- Approval persistence (Phase 5 / Phase 8)
-- HTTP gateway (Phase 6 / Phase 8)
-- MCP adapter (Phase 7)
-- CLI expansion (Phase 8)
-- Local dashboard (Phase 9)
+- HTTP gateway
+- MCP adapter
+- CLI expansion
+- Local dashboard
 
-## Redaction Known Limitations
-- Obfuscated/encoded secrets not detected
-- Binary data rejected rather than redacted (safety choice)
-- Entropy detection is statistical; false positives possible when enabled
-- No regex-customization API currently exposed (future enhancement)
-- See `docs/redaction.md` for full documentation
+## Approval Known Limitations
+- Cross-node coordination not supported; single-process SQLite only
+- Token delivery is caller's responsibility (no built-in out-of-band channel)
+- Entropy source is OS-dependent (getrandom syscall wrapper)
+- See `docs/approvals.md` for full documentation

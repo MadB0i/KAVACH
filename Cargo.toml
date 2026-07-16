@@ -9,6 +9,7 @@ members = [
     "crates/kavach-enforcement",
     "crates/kavach-redaction",
     "crates/kavach-audit",
+    "crates/kavach-approval",
 ]
 
 [workspace.package]

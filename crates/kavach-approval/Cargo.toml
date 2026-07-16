@@ -1,0 +1,31 @@
+[package]
+name = "kavach-approval"
+description = "Restart-safe human approval broker with SQLite persistence and audit integration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+kavach-core = { workspace = true }
+kavach-audit = { path = "../kavach-audit", version = "0.1.0" }
+kavach-redaction = { workspace = true }
+kavach-runtime = { path = "../kavach-runtime", version = "0.1.0" }
+sha2 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+rusqlite = { workspace = true }
+getrandom = "0.2"
+constant_time_eq = "0.3"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

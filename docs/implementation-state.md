@@ -47,6 +47,40 @@ Last updated: 2026-07-16
 | Misc validation | 3 |
 | **Total** | **75** |
 
+## Phase 8: Human Approval Broker — COMPLETE (56 tests)
+
+### Approval Architecture
+- `kavach-approval/` — new dedicated crate
+- `ApprovalBroker` trait + `SqliteApprovalBroker` with `AuditStore` integration
+- `SqliteApprovalStore` (pub(crate)) — SQLite-backed persistence with WAL, foreign keys, busy timeout
+- `ApprovalToken` — CSPRNG 256-bit bearer token, SHA-256 hashed at rest, constant-time verification
+- `ApprovalState` — 6-state machine: Pending → Approved → Consumed | Rejected | Expired | Cancelled
+- Request digest binding prevents token replay across different requests
+- Pending TTL (configurable, default 30min) + consumption window (5min after approval)
+- All transitions inside `BEGIN IMMEDIATE` transactions
+
+### Test Coverage (56 approval tests)
+| Category | Tests |
+|----------|-------|
+| Database + migration | 6 |
+| Creation + dedup | 8 |
+| Token generation/verification | 7 |
+| State transitions (approve/reject/consume/revoke) | 8 |
+| Expiry (tick/pending TTL/consumption window) | 5 |
+| Concurrency | 5 |
+| Audit integration | 5 |
+| Restart safety (persistence across reopen) | 4 |
+| Edge cases (cancelled, double-approve, idempotency, limits, validation) | 8 |
+| **Total** | **56** |
+
+### Key Protections
+- **Token hashing**: SHA-256 at rest, constant-time comparison via `subtle::ConstantEq`
+- **Request binding**: SHA-256 digest of (request_id, resource, action, subject) verified on every operation
+- **Concurrency**: `BEGIN IMMEDIATE` + `WHERE state = ?` prevents races
+- **Redaction**: `ApprovalToken` Debug/Display = `"<redacted>"`, audit logs omit raw token
+- **Expiry**: dual TTL (pending + consumption window) enforced in `tick()`
+- **Validation**: ID/actor/summary length limits enforced on submission
+
 ## Phase 7: Secret Detection and Redaction — COMPLETE (52 tests)
 
 ### Redaction Architecture
@@ -107,13 +141,14 @@ Last updated: 2026-07-16
 | kavach-runtime | 8 |
 | kavach-enforcement | 134 |
 | kavach-redaction | 52 |
+| kavach-approval | 56 |
 | kavach-cli | 0 |
-| **Total** | **379** |
+| **Total** | **435** |
 
 ## Verification
 ```
 cargo fmt --all -- --check          PASS
-cargo test --workspace --all-features  PASS (379)
+cargo test --workspace --all-features  PASS (435)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
 cargo doc --workspace --no-deps     PASS
 
