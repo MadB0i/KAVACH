@@ -47,6 +47,58 @@ Last updated: 2026-07-16
 | Misc validation | 3 |
 | **Total** | **75** |
 
+## Phase 7: Secret Detection and Redaction — COMPLETE (52 tests)
+
+### Redaction Architecture
+- `kavach-redaction/` — new dedicated crate
+- `Redactor` trait: `redact_text(&str)`, `redact_bytes(&[u8])`
+- `CompositeRedactor`: combines multiple detectors with deterministic merge-overlap logic
+- `CompositeRedactorBuilder`: builder pattern for configuring detectors
+- 8 detector modules covering bearer, JWT, PEM, password/API-key assignments, GitHub, AWS, exact secrets, entropy
+
+### Detectors
+| Detector | Category | Key Behavior |
+|----------|----------|-------------|
+| BearerTokenDetector | `BearerToken` | "Bearer <token>", token ≥8 chars |
+| JwtDetector | `Jwt` | 3 dot-segmented base64url segments, bounded lengths |
+| PemPrivateKeyDetector | `PrivateKey` | Complete PEM blocks (RSA, EC, OpenSSH, DSA) |
+| SensitiveKeyAssignmentDetector | `SensitiveKeyAssignment` | 30+ sensitive keys, case-insensitive, `=`/`:`, quoted/unquoted |
+| GitHubTokenDetector | `GitHubToken` | ghp/gho/ghu/ghs/ghr_ prefixed, 36-40 alphanumeric chars |
+| AwsKeyIdDetector | `AwsKeyId` | AKIA, A3T, etc. + 16 alphanumeric chars |
+| ExactSecretDetector | `ConfiguredSecret` | Longest-match-first, overlapping deduplication |
+| EntropyDetector | `EntropyCandidate` | Shannon entropy, optional (disabled by default) |
+
+### Key Protections
+- **No secret logging**: configured secrets never appear in Debug output, errors contain category/range only
+- **Deterministic**: same input + same config = same output
+- **Idempotent**: second pass on already-redacted text produces no changes
+- **Stable markers**: `[REDACTED:<category>]` markers not re-processed
+- **Binary safety**: non-UTF-8 input returns `UnsupportedBinaryInput` error
+- **Size limits**: MAX_INPUT_BYTES (1MiB), MAX_CONFIGURED_SECRETS (1000), MAX_CONFIGURED_SECRET_LENGTH (1024)
+- **Thread-safe**: `Redactor` trait requires `Send + Sync`; tested with 4 concurrent threads
+
+### Integration Helpers
+- `redact_error_message`, `redact_tracing_field`, `redact_command_output`
+- `redact_network_body`, `redact_header_value`, `redact_filesystem_preview`
+- `redact_approval_summary`, `redact_audit_metadata`
+
+### Test Coverage (52 redaction tests)
+| Category | Tests |
+|----------|-------|
+| Bearer token detection | 3 |
+| JWT detection | 3 |
+| PEM detection | 5 |
+| Password/API-key assignments | 7 |
+| GitHub token detection | 2 |
+| AWS key ID detection | 2 |
+| Exact secret matching | 5 |
+| Entropy detection | 5 |
+| Composite redaction | 16 |
+| Integration helpers | 2 |
+| SecretContainer limits | 2 |
+| **Total** | **52** |
+
+### Test Summary
 | Crate | Tests |
 |-------|-------|
 | kavach-core | 33 |
@@ -54,13 +106,14 @@ Last updated: 2026-07-16
 | kavach-config | 11 |
 | kavach-runtime | 8 |
 | kavach-enforcement | 134 |
+| kavach-redaction | 52 |
 | kavach-cli | 0 |
-| **Total** | **327** |
+| **Total** | **379** |
 
 ## Verification
 ```
 cargo fmt --all -- --check          PASS
-cargo test --workspace --all-features  PASS (327)
+cargo test --workspace --all-features  PASS (379)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
 cargo doc --workspace --no-deps     PASS
 
@@ -70,3 +123,6 @@ cargo doc --workspace --no-deps     PASS
 - ureq v2 TLS defaults enabled; no certificate verification disable option
 - Redirect integration tests use `redirects(0)` on ureq agent to prevent internal redirect following, enabling manual re-validation of redirect targets
 - Flaky `redirect_to_allowed_target_succeeds` integration test removed due to Windows TCP race condition (WSAECONNRESET); redirect validation logic tested via `validate_redirect_url` unit tests (9) and two redirect integration tests (private-IP and metadata-hostname targets)
+- Redaction binary input: non-UTF-8 data rejected with `UnsupportedBinaryInput` (safety: lossy conversion could leak secrets)
+- Entropy detection is statistical; UUIDs and hashes excluded where possible, but not guaranteed
+- See `docs/redaction.md` for full redaction documentation

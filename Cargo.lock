@@ -532,6 +532,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-redaction"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "thiserror",
+]
+
+[[package]]
 name = "kavach-runtime"
 version = "0.1.0"
 dependencies = [

@@ -3,38 +3,69 @@
 Last updated: 2026-07-16
 
 ## Current Task
-Phase 6 — Network Enforcement — COMPLETE (75 tests, 327 total).
+Phase 7 — Secret Detection and Redaction — COMPLETE (52 tests, 379 total).
 
 ## Key Changes (This Session)
-- Added `is_metadata_host` check in redirect handling before DNS resolution (prevents metadata hostname from triggering a DNS resolution attempt)
-- Set `redirects(0)` on ureq agent to disable internal redirect following, ensuring all redirects go through our manual re-validation
-- Removed flaky `redirect_to_allowed_target_succeeds` integration test (Windows TCP race: WSAECONNRESET); redirect logic covered by 9 `validate_redirect_url` unit tests + 2 redirect integration tests
-- Replaced `redirect_resolves_and_revalidates_addresses` test with two specific tests:
-  - `redirect_to_private_ip_is_blocked` — redirect to 10.0.0.1 → `RedirectRejected`
-  - `redirect_to_metadata_hostname_blocked` — redirect to metadata.google.internal → `MetadataEndpointBlocked`
-- Added `with_allow_loopback()` method on `NetworkEnforcer` (test-only SSRF bypass)
-- Added metadata hostname check to redirect handler path
+- Created `crates/kavach-redaction/` — new workspace crate (8 source modules, 52 tests)
+- Implemented `Redactor` trait + `CompositeRedactor` with 8 detector types
+- Detectors: Bearer, JWT, PEM private keys, password/API-key assignments, GitHub tokens, AWS key IDs, exact secrets, entropy (optional)
+- `SecretContainer` — secret-protecting wrapper with custom Debug (reveals count only)
+- Integration helpers for error messages, tracing fields, command output, network bodies, headers, filesystem previews, approval summaries, audit metadata
+- Added `regex` to workspace dependencies
+- Created `docs/redaction.md` with architecture, detector details, limitations documentation
 
 ## Files Changed
-- `crates/kavach-enforcement/src/network.rs` — Phase 6 network enforcement (~1633 lines, 75 tests)
-- `docs/implementation-state.md` — updated with Phase 6 completion
+- `Cargo.toml` — added kavach-redaction to workspace members, added regex dependency
+- `crates/kavach-redaction/Cargo.toml` — new crate manifest
+- `crates/kavach-redaction/src/lib.rs` — crate root
+- `crates/kavach-redaction/src/types.rs` — core types, constants, SecretContainer
+- `crates/kavach-redaction/src/error.rs` — RedactionError, RedactionErrorKind
+- `crates/kavach-redaction/src/redactor.rs` — Redactor trait, CompositeRedactor, CompositeRedactorBuilder
+- `crates/kavach-redaction/src/helpers.rs` — integration helper functions
+- `crates/kavach-redaction/src/detectors/` — 8 detector modules + Detector trait
+- `docs/redaction.md` — new file
+- `docs/implementation-state.md` — updated with Phase 7
 - `docs/agent-handoff.md` — updated (this file)
 
 ## Commands Already Run (All Pass)
 ```
 cargo fmt --all                          PASS
-cargo test --workspace --all-features    PASS (327)
+cargo test --workspace --all-features    PASS (379)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
 ```
 
 ## Verification Checklist
-- [x] Network enforcement with SSRF, DNS rebinding, and redirect protection
-- [x] All 327 tests pass on Windows
+- [x] kavach-redaction crate scaffolded with Cargo.toml
+- [x] Redactor trait + CompositeRedactor with builder
+- [x] Bearer token detector
+- [x] JWT-like token detector (avoids version/filename false positives)
+- [x] PEM private key detector (RSA, EC, OpenSSH, DSA)
+- [x] Password/API-key assignment detector (30+ keys, case-insensitive)
+- [x] GitHub token detector
+- [x] AWS key ID detector
+- [x] Exact secret detector with SecretContainer (longest-match, limits)
+- [x] High-entropy detector (optional, disabled by default)
+- [x] Integration helpers (8 functions)
+- [x] 52 tests across all detectors and composite redactor
+- [x] Secret values never appear in Debug output
+- [x] Errors contain category/range only, not secret values
+- [x] Binary non-UTF-8 input returns UnsupportedBinaryInput
+- [x] Input size limit enforced (1 MiB)
+- [x] Thread-safe (Send + Sync)
 - [x] Clippy zero warnings
-- [x] `#[forbid(unsafe_code)]` enforced across workspace
-- [x] Implementation-state.md updated with test breakdown
+- [x] All 379 workspace tests pass
 
 ## Next Steps
-- kavach-cli integration: wire up enforcement modules into CLI
-- Performance benchmarks for network enforcement (especially DNS resolution path)
-- Consider Unix-specific test coverage for platform-dependent behaviors
+- Audit storage and tamper-evident chain (Phase 3 / Phase 8)
+- Approval persistence (Phase 5 / Phase 8)
+- HTTP gateway (Phase 6 / Phase 8)
+- MCP adapter (Phase 7)
+- CLI expansion (Phase 8)
+- Local dashboard (Phase 9)
+
+## Redaction Known Limitations
+- Obfuscated/encoded secrets not detected
+- Binary data rejected rather than redacted (safety choice)
+- Entropy detection is statistical; false positives possible when enabled
+- No regex-customization API currently exposed (future enhancement)
+- See `docs/redaction.md` for full documentation
