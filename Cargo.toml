@@ -12,6 +12,7 @@ members = [
     "crates/kavach-approval",
     "crates/kavach-gateway",
     "crates/kavach-mcp",
+    "examples/kavach-examples",
 ]
 
 [workspace.package]

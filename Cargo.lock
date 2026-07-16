@@ -941,6 +941,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-examples"
+version = "0.1.0"
+dependencies = [
+ "kavach-approval",
+ "kavach-audit",
+ "kavach-core",
+ "kavach-enforcement",
+ "kavach-policy",
+ "kavach-redaction",
+ "kavach-runtime",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "kavach-gateway"
 version = "0.1.0"
 dependencies = [

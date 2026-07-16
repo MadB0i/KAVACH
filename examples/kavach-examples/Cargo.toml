@@ -1,0 +1,42 @@
+[package]
+name = "kavach-examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "KAVACH working examples — real, documented, end-to-end"
+
+[dependencies]
+kavach-core.workspace = true
+kavach-policy.workspace = true
+kavach-runtime.workspace = true
+kavach-enforcement.workspace = true
+kavach-redaction.workspace = true
+kavach-approval.workspace = true
+kavach-audit.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[[bin]]
+name = "basic-policy"
+path = "src/bin/basic_policy.rs"
+
+[[bin]]
+name = "guarded-filesystem"
+path = "src/bin/guarded_filesystem.rs"
+
+[[bin]]
+name = "guarded-command"
+path = "src/bin/guarded_command.rs"
+
+[[bin]]
+name = "guarded-network"
+path = "src/bin/guarded_network.rs"
+
+[[bin]]
+name = "approval-flow"
+path = "src/bin/approval_flow.rs"
+
+[[bin]]
+name = "demo-agent"
+path = "src/bin/demo_agent.rs"

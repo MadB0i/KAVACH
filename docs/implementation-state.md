@@ -360,6 +360,49 @@ MCP Client → JSON-RPC → McpProxy → validate → convert to ToolRequest →
 - **CORS**: Vite dev proxy handles cross-origin in development; same-origin in production
 - **No fake data**: all pages consume real API endpoints only; empty/error states shown when data is unavailable
 
+## Phase 15: Working Examples & End-to-End Demo — COMPLETE (6 example binaries, 10/10 scenarios)
+
+### Examples Architecture
+- `examples/kavach-examples/` — new workspace member with 6 standalone Rust binaries
+- Each binary uses production KAVACH crate APIs (`KavachRuntime`, `PolicyEngine`, `ApprovalBroker`, `CompositeRedactor`, `AuditStore`)
+- All examples use temporary files, databases, and local servers only — no public internet
+- No fake data or mock success claims; every result is from real enforcement
+
+### Example Index
+| Binary | What It Shows |
+|--------|---------------|
+| `basic-policy` | PolicyEngine evaluation: allow-read, deny-env, approval-required, default deny. 6/6 PASS |
+| `guarded-filesystem` | Filesystem enforcement: source file allowed, .env denied, unknown path denied. 3/3 PASS |
+| `guarded-command` | Command enforcement: echo allowed, shutdown denied, default deny, dry-run. 4/4 PASS |
+| `guarded-network` | Network enforcement: localhost allowed, 169.254.169.254 blocked (SSRF), unknown host denied. 3/3 PASS |
+| `approval-flow` | Full approval lifecycle: evaluate → ApprovalRequired → approve → consume → replay rejected → audit verify. 6/6 PASS |
+| `demo-agent` | End-to-end 10-scenario demo covering all KAVACH capabilities. 10/10 PASS |
+
+### Demo Script
+- `scripts/demo.ps1` — Windows PowerShell orchestration script
+- Builds all examples, runs each in sequence, reports PASS/FAIL per example
+
+### Safe Demo Results (10/10 Scenarios)
+| # | Scenario | Result |
+|---|----------|--------|
+| 1 | Allowed project-file read (src/app.rs) | Permitted |
+| 2 | Denied .env read (sanitized summary) | Denied, no secret leak |
+| 3 | Approval-required file deletion (approve + consume) | Token consumed, flow works |
+| 4 | Allowed harmless command (echo) | Permitted at policy layer |
+| 5 | Denied dangerous command (shutdown) | Denied, never executes |
+| 6 | Allowed local HTTP (127.0.0.1) | Permitted at policy layer |
+| 7 | Blocked SSRF (169.254.169.254) | Denied by deny-metadata rule |
+| 8 | Response secret redaction (Bearer token + API key) | Secrets redacted, data preserved |
+| 9 | Single-use approval replay rejection | First use succeeds, replay rejected |
+| 10 | Audit-chain verification (8 events) | Chain valid, no integrity errors |
+
+### Key Protections Verified
+- **No permit reuse**: consumed permits/approval tokens rejected on second use
+- **No secret leaks**: sanitized summaries never contain raw credentials
+- **Default deny**: unknown resources/executables/hosts fail closed
+- **SSRF protection**: cloud metadata endpoints blocked by policy engine
+- **Deterministic policy**: same input always produces same decision
+
 ## Test Summary
 | Crate | Tests |
 |-------|-------|
@@ -386,6 +429,12 @@ cargo doc --workspace --no-deps          PASS
 npm run lint (dashboard)                 PASS (zero warnings)
 npm run test (dashboard)                 PASS (38)
 npm run build (dashboard)                PASS
+examples/basic-policy (cargo run)        PASS (6/6)
+examples/guarded-filesystem (cargo run)  PASS (3/3)
+examples/guarded-command (cargo run)     PASS (4/4)
+examples/guarded-network (cargo run)     PASS (3/3)
+examples/approval-flow (cargo run)       PASS (6/6)
+examples/demo-agent (cargo run)          PASS (10/10)
 
 ## Platform Limitations
 - Loopback blocked by default; local test server integration tests use `with_allow_loopback(true)` override
