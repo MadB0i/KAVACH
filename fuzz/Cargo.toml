@@ -1,0 +1,47 @@
+[package]
+name = "kavach-fuzz"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Fuzz targets for KAVACH security runtime — requires nightly Rust"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kavach-core = { path = "../crates/kavach-core" }
+kavach-policy = { path = "../crates/kavach-policy" }
+kavach-redaction = { path = "../crates/kavach-redaction" }
+kavach-audit = { path = "../crates/kavach-audit" }
+serde_json = "1"
+toml = "0.8"
+
+[[bin]]
+name = "tool_request_json"
+path = "fuzz_targets/tool_request_json.rs"
+
+[[bin]]
+name = "policy_toml"
+path = "fuzz_targets/policy_toml.rs"
+
+[[bin]]
+name = "path_normalization"
+path = "fuzz_targets/path_normalization.rs"
+
+[[bin]]
+name = "network_input"
+path = "fuzz_targets/network_input.rs"
+
+[[bin]]
+name = "redaction_input"
+path = "fuzz_targets/redaction_input.rs"
+
+[[bin]]
+name = "audit_event"
+path = "fuzz_targets/audit_event.rs"
+
+[[bin]]
+name = "mcp_jsonrpc"
+path = "fuzz_targets/mcp_jsonrpc.rs"

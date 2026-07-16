@@ -20,5 +20,10 @@ kavach-redaction = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+proptest.workspace = true
+criterion.workspace = true
+kavach-core = { workspace = true }
+
 [lints]
 workspace = true

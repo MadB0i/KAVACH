@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fc589e5ff7adcda2e52e5574a2b3a8b1a19c035132f6a1ae41fae3734190aba3 # shrinks to haystack = "Bearer aaa0-0-0"
+cc 0c20d16a9ce4d88574eb6eff5542f9394d9064cbd2d783dc24955893ddfb72b7 # shrinks to haystack = "aBearer aa_0aa__"
+cc 78c1671ba44f7a1bb61fed64c6cb7d6e156dd010ed36512000e208ebc028c45d # shrinks to prefix = "A", token = "A0A-0aAAA0", suffix = ""
+cc ec29f9106e11fcdeda2f2874eeed508aa1417cdffa9821ecc24afe82a94ae61b # shrinks to prefix = "", token = "-a_Aaa0A0a", suffix = "º"

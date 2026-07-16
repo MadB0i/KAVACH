@@ -25,3 +25,6 @@ pub use types::{
     MAX_SENSITIVE_KEY_PATTERNS, MIN_ENTROPY_CANDIDATE_LENGTH, RedactionResult, SecretContainer,
     SecretMatch,
 };
+
+#[cfg(test)]
+mod proptests;

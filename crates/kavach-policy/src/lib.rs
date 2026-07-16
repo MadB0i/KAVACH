@@ -32,3 +32,6 @@ pub use engine::PolicyEngine;
 pub use io::MAX_POLICY_FILE_SIZE;
 pub use io::{PolicyLoadError, load_policy_from_file, load_policy_from_str};
 pub use model::{DefaultEffect, Effect, Policy, PolicyValidationError, Rule, RuleConditions};
+
+#[cfg(test)]
+mod proptests;

@@ -360,6 +360,60 @@ MCP Client → JSON-RPC → McpProxy → validate → convert to ToolRequest →
 - **CORS**: Vite dev proxy handles cross-origin in development; same-origin in production
 - **No fake data**: all pages consume real API endpoints only; empty/error states shown when data is unavailable
 
+## Phase 16: Property Testing, Fuzz Targets & Benchmarks — COMPLETE
+
+### Property Tests (proptest)
+| Crate | Property Tests | What They Verify |
+|-------|---------------|------------------|
+| kavach-core | 9 | request_id/session_id/agent_id round-trip, path normalization no-crash, command resource no-panic, network scheme/host no-crash, request digest determinism, permit single-use enforcement |
+| kavach-policy | 1 | policy decision determinism (same input → same decision) |
+| kavach-redaction | 3 | redaction idempotence, empty text handling, Bearer token detection |
+| kavach-audit | 2 | canonical encoding determinism, audit store append + verify |
+| kavach-approval | 2 | read-is-permitted for any path, approval required for delete |
+| **Total** | **17** | |
+
+### Fuzz Targets (cargo-fuzz, nightly only)
+| Target | Input Type |
+|--------|-----------|
+| `fuzz_targets/fuzz_tool_request.rs` | ToolRequest JSON |
+| `fuzz_targets/fuzz_policy_toml.rs` | Policy TOML |
+| `fuzz_targets/fuzz_path_normalization.rs` | Path strings |
+| `fuzz_targets/fuzz_network_input.rs` | URL/network input |
+| `fuzz_targets/fuzz_redaction_input.rs` | Redaction input |
+| `fuzz_targets/fuzz_audit_event.rs` | Audit event decoding |
+| `fuzz_targets/fuzz_mcp_jsonrpc.rs` | MCP JSON-RPC input |
+
+Fuzz targets live in `fuzz/` (not a workspace member) and require nightly Rust.
+
+### Criterion Benchmarks
+| Crate | Benchmark | What It Measures |
+|-------|-----------|-----------------|
+| kavach-core | `request_validation` | ToolRequest validation throughput |
+| kavach-policy | `policy_evaluation` | Policy evaluation at 1/10/100 rules |
+| kavach-policy | `path_glob_matching` | Path-glob matching throughput |
+| kavach-core | `request_digest` | Request digest computation |
+| kavach-redaction | `redaction` | Composite redaction throughput |
+| kavach-audit | `audit_append` | Audit event append + verification |
+| kavach-approval | `approval_lookup` | Approval lookup throughput |
+| kavach-runtime | `runtime_evaluation` | Full runtime evaluation pipeline |
+
+### Key Design Decisions
+- **Fuzz targets in `fuzz/`**: Not a workspace member, requires nightly. Stable builds unaffected.
+- **`#![allow(...)]` in proptest files**: Each proptest module has `#![allow(clippy::unwrap_used, unused_imports)]` to satisfy workspace-level `unwrap_used = "deny"`.
+- **`#[cfg(test)] mod proptests;` in lib.rs**: Each crate's `lib.rs` declares the proptest module behind `#[cfg(test)]`.
+- **No fake benchmark numbers**: Benchmarks compile but are not run (CI constraint). Actual numbers produced on developer machines.
+- **Bounded inputs**: All proptest strategies use bounded length/size constraints.
+
+### Verification
+```
+cargo fmt --all -- --check                          PASS
+cargo check --workspace --all-targets --all-features PASS
+cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
+cargo test --workspace --all-features                PASS (631)
+cargo doc --workspace --no-deps                      PASS
+cargo bench --workspace --no-run                     PASS
+```
+
 ## Phase 15: Working Examples & End-to-End Demo — COMPLETE (6 example binaries, 10/10 scenarios)
 
 ### Examples Architecture
@@ -406,18 +460,19 @@ MCP Client → JSON-RPC → McpProxy → validate → convert to ToolRequest →
 ## Test Summary
 | Crate | Tests |
 |-------|-------|
-| kavach-core | 43 |
-| kavach-policy | 141 |
+| kavach-core | 52 |
+| kavach-policy | 142 |
 | kavach-config | 11 |
 | kavach-runtime | 43 |
 | kavach-enforcement | 134 |
-| kavach-redaction | 52 |
-| kavach-approval | 56 |
+| kavach-redaction | 55 |
+| kavach-approval | 58 |
+| kavach-audit | 46 |
 | kavach-gateway | 57 |
 | kavach-cli | 17 |
 | kavach-mcp | 16 |
 | dashboard | 38 |
-| **Total** | **652** |
+| **Total** | **669** |
 
 ## Verification
 ```

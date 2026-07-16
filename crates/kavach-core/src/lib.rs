@@ -41,3 +41,6 @@ pub use resource::{
     ResourceKind,
 };
 pub use subject::{AgentSubject, Capability, CapabilitySet, MAX_CAPABILITY_LEN, TrustLevel};
+
+#[cfg(test)]
+mod proptests;

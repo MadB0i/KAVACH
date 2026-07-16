@@ -55,3 +55,6 @@ pub use hash::HashValue;
 pub use query::{ChainStatus, PersistedEventSummary};
 pub use store::{AuditStore, AuditStoreBuilder};
 pub use verification::{VerificationError, VerificationErrorKind, VerificationReport};
+
+#[cfg(test)]
+mod proptests;

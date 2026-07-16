@@ -1038,3 +1038,6 @@ mod tests {
         drop(ctx);
     }
 }
+
+#[cfg(test)]
+mod proptests;
