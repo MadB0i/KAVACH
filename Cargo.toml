@@ -11,6 +11,7 @@ members = [
     "crates/kavach-audit",
     "crates/kavach-approval",
     "crates/kavach-gateway",
+    "crates/kavach-mcp",
 ]
 
 [workspace.package]
@@ -34,6 +35,7 @@ kavach-redaction = { path = "crates/kavach-redaction", version = "0.1.0" }
 kavach-audit = { path = "crates/kavach-audit", version = "0.1.0" }
 kavach-approval = { path = "crates/kavach-approval", version = "0.1.0" }
 kavach-gateway = { path = "crates/kavach-gateway", version = "0.1.0" }
+kavach-mcp = { path = "crates/kavach-mcp", version = "0.1.0" }
 
 regex = "1"
 sha2 = "0.10"

@@ -966,6 +966,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-mcp"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "kavach-config",
+ "kavach-core",
+ "kavach-policy",
+ "kavach-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "kavach-policy"
 version = "0.1.0"
 dependencies = [
