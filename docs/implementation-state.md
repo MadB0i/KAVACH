@@ -515,6 +515,56 @@ Workflow YAML syntax                                 PASS (6/6 valid)
 - **SSRF protection**: cloud metadata endpoints blocked by policy engine
 - **Deterministic policy**: same input always produces same decision
 
+## Phase 18: Final Documentation, Packaging & Release Hardening — COMPLETE
+
+### Documentation Audit & Fixes
+| Issue | Action |
+|-------|--------|
+| README.md severely outdated (said everything "planned") | Fully rewritten to match actual implementation |
+| `docs/roadmap.md` — stale early planning doc | Deleted |
+| Missing SECURITY.md, CONTRIBUTING.md, CHANGELOG.md | Created |
+| `config/policy.example.toml` referenced but missing | Created with 8 example rules |
+| `.gitignore` missing `dashboard/dist`, `node_modules/`, `*.db`, `/data/` | Added |
+| `docs/architecture.md`, `docs/security-model.md` referenced but missing | Removed stale references from README |
+
+### Dead Code Cleanup
+| File | Removed |
+|------|---------|
+| `crates/kavach-enforcement/src/command.rs` | Unused `SHELL_FLAGS` constant |
+
+### Allow/Suppression Review
+- All 48 `#[allow(...)]` annotations reviewed
+- 35 in `#[cfg(test)]` blocks (acceptable)
+- 13 in production code: `dead_code` on future config fields (4), `too_many_arguments` on constructors (3), `non_snake_case` on JSON-RPC fields (4), `dead_code` on public API enum (1), `dead_code` on unused helper modules (1)
+- No broad or unjustified suppressions found
+
+### Secret Leakage Review
+- All error types checked: no secrets in Debug/Display impls
+- All audit events checked: no raw secrets persisted
+- All `RedactionError` types check: category/range only, no secret values
+- Approval tokens: Debug/Display = `"<redacted>"`, SHA-256 hashed at rest
+- CLI errors: use sanitized `CliError` with `Display` that never shows raw credentials
+
+### Verification
+```
+cargo fmt --all -- --check                          PASS
+cargo check --workspace --all-targets --all-features PASS
+cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
+cargo test --workspace --all-features                PASS (631)
+cargo test --release --workspace --all-features       PASS (631)
+cargo doc --workspace --no-deps                      PASS
+cargo bench --workspace --no-run                     PASS
+npm --prefix dashboard run lint                      PASS (zero warnings)
+npm --prefix dashboard run test                      PASS (38)
+npm --prefix dashboard run build                     PASS
+examples/basic-policy                                PASS (6/6)
+examples/guarded-filesystem                          PASS (3/3)
+examples/guarded-command                             PASS (4/4)
+examples/guarded-network                             PASS (3/3)
+examples/approval-flow                               PASS (6/6)
+examples/demo-agent                                  PASS (10/10)
+```
+
 ## Test Summary
 | Crate | Tests |
 |-------|-------|
@@ -538,6 +588,7 @@ cargo fmt --all -- --check                          PASS
 cargo check --workspace --all-targets --all-features  PASS
 cargo clippy --workspace --all-targets --all-features -- -D warnings  PASS (zero)
 cargo test --workspace --all-features                PASS (631)
+cargo test --release --workspace --all-features       PASS (631)
 cargo doc --workspace --no-deps                      PASS
 cargo bench --workspace --no-run                     PASS
 npm --prefix dashboard run lint                      PASS (zero warnings)

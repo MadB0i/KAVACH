@@ -15,3 +15,13 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Generated build output
+/dashboard/dist
+/dashboard/node_modules
+node_modules/
+
+# Local database files
+*.db
+*.sqlite
+/data/

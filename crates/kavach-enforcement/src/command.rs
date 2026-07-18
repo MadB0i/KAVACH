@@ -319,24 +319,6 @@ const SHELL_EXECUTABLES: &[&str] = &[
     "ksh",
 ];
 
-#[allow(dead_code)]
-const SHELL_FLAGS: &[&str] = &[
-    "/c",
-    "/C",
-    "/k",
-    "/K",
-    "-c",
-    "-C",
-    "-Command",
-    "-command",
-    "--command",
-    "-EncodedCommand",
-    "-Encodedcommand",
-    "-encodedcommand",
-    "-e",
-    "-E",
-];
-
 fn is_shell_executable(exe: &str) -> bool {
     // Lower-case the filename portion for comparison.
     let name = std::path::Path::new(exe)

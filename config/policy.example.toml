@@ -1,0 +1,70 @@
+# KAVACH example policy — default-deny with allow/deny/require-approval rules
+# Reference: https://github.com/anomalyco/kavach
+
+[policy]
+name = "default"
+schema_version = 1
+default_effect = "deny"
+
+# ── Allow rules ────────────────────────────────────────────────────────────
+
+[[rules]]
+id = "allow-src-read"
+description = "Allow reading source files in the project tree"
+effect = "allow"
+operations = ["file_read"]
+path_globs = ["src/**"]
+
+[[rules]]
+id = "allow-tmp-write"
+description = "Allow writing temporary files"
+effect = "allow"
+operations = ["file_write"]
+path_globs = ["/tmp/**", "C:/Temp/**"]
+
+[[rules]]
+id = "allow-echo"
+description = "Allow harmless echo/cat commands"
+effect = "allow"
+operations = ["command_execute"]
+executables = ["echo", "cat", "type"]
+
+[[rules]]
+id = "allow-localhost"
+description = "Allow HTTP requests to localhost"
+effect = "allow"
+operations = ["network_request"]
+network_hosts = ["127.0.0.1", "localhost"]
+network_schemes = ["http", "https"]
+
+# ── Deny rules ─────────────────────────────────────────────────────────────
+
+[[rules]]
+id = "deny-sensitive-files"
+description = "Block access to secret files"
+effect = "deny"
+operations = ["file_read", "file_write", "file_delete"]
+path_globs = ["**/.env", "**/.env.*", "**/id_rsa", "**/.ssh/**", "**/credentials**"]
+
+[[rules]]
+id = "deny-dangerous-commands"
+description = "Block dangerous shell commands"
+effect = "deny"
+operations = ["command_execute"]
+executables = ["shutdown", "reboot", "rm", "del", "format", "dd", "mkfs"]
+
+[[rules]]
+id = "deny-metadata"
+description = "Block SSRF to cloud metadata endpoints"
+effect = "deny"
+operations = ["network_request"]
+network_hosts = ["169.254.169.254", "metadata.google.internal", "metadata.google.internal."]
+
+# ── Approval-required rules ────────────────────────────────────────────────
+
+[[rules]]
+id = "approval-delete"
+description = "Require human approval for destructive file operations"
+effect = "require_approval"
+operations = ["file_delete"]
+path_globs = ["**"]

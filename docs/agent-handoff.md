@@ -3,30 +3,55 @@
 Last updated: 2026-07-16
 
 ## Current Task
-Phase 17 — Cross-Platform CI & Repository Security Automation — COMPLETE.
+Phase 18 — Final Documentation, Packaging & Release Hardening — COMPLETE.
 
 ## Key Changes (This Session)
 
-### Phase 17: CI & Security Automation
-- Created 5 GitHub Actions workflows (ci, security, codeql, fuzz, release)
-- Created `.gitattributes` for LF line endings
-- Created `deny.toml` for cargo-deny policy
-- Created Dependabot config for cargo, npm, github-actions
-- Created PR template with CI checklist
-- Created bug report and feature request issue templates
-- Created placeholder CODEOWNERS
+### Phase 18: Documentation & Release Hardening
+- Deleted stale `docs/roadmap.md` (early planning doc, not actual state)
+- Rewrote README.md to match actual 12-crate workspace with all features documented
+- Created SECURITY.md (vulnerability reporting, scope, supported versions)
+- Created CONTRIBUTING.md (workflow, code style, PR checklist)
+- Created CHANGELOG.md (0.1.0 release notes)
+- Created `config/policy.example.toml` (8 example rules with comments)
+- Updated `.gitignore` for `dashboard/dist`, `node_modules/`, `*.db`, `/data/`
+- Removed unused `SHELL_FLAGS` constant from command.rs
+- Reviewed all 48 `#[allow(...)]` annotations — all justified
+- Reviewed all error/logging paths for secret leakage — none found
+- Verified all 6 examples pass (32/32 scenarios)
+- Verified all examples use temp files, no destructive ops, no fake data
 
-### Files Created
-- `.gitattributes` — LF line endings
-- `.github/dependabot.yml` — weekly dependency updates
-- `.github/workflows/ci.yml` — matrix CI (win/ubuntu/macos)
-- `.github/workflows/security.yml` — cargo-deny, cargo audit, npm audit, dependency review
-- `.github/workflows/codeql.yml` — CodeQL for Rust + JavaScript/TypeScript
-- `.github/workflows/release.yml` — checksummed release artifacts
-- `.github/workflows/fuzz.yml` — weekly scheduled fuzz (nightly)
-- `.github/CODEOWNERS` — placeholder
-- `.github/PULL_REQUEST_TEMPLATE.md` — PR checklist
-- `.github/ISSUE_TEMPLATE/bug_report.md` — bug report template
-- `.github/ISSUE_TEMPLATE/feature_request.md` — feature request template
-- `deny.toml` — cargo-deny configuration
-- `.gitattributes` — LF line endings
+### Docs Verified to Match Real Behavior
+- `docs/runtime.md` — accurate
+- `docs/redaction.md` — accurate
+- `docs/approvals.md` — accurate
+- `examples/README.md` — accurate
+
+### Repository Release-Readiness Checklist
+- [x] All 18 phases complete
+- [x] Cargo workspace builds and tests pass (631 tests, debug + release)
+- [x] All clippy lints pass (-D warnings, zero violations)
+- [x] All 6 examples pass (32/32 scenarios)
+- [x] All 10 demo scenarios pass
+- [x] CI workflows created (fmt, check, clippy, test, doc, bench, dashboard)
+- [x] Security scanning configured (cargo-deny, cargo audit, CodeQL, npm audit)
+- [x] Release workflow creates SHA-256 checksummed artifacts
+- [x] CHANGELOG.md documents the release
+- [x] LICENSE is Apache-2.0
+- [x] SECURITY.md defines reporting process
+- [x] CONTRIBUTING.md documents PR process
+- [x] `.gitignore` covers generated files and secrets
+- [x] No secrets, databases, node_modules, target, dist, or local config tracked
+- [x] No placeholders, fake claims, or unfinished TODOs remain
+- [x] 48 `#[allow(...)]` annotations reviewed — none are broad or unjustified
+- [x] Error/logging paths reviewed — no secret leakage
+- [x] Public APIs reviewed — all documented
+- [x] README includes supported platforms and honest limitations
+- [x] Release workflow does NOT publish automatically
+- [x] `docs/implementation-state.md` updated
+- [x] `docs/agent-handoff.md` updated
+
+## Next Steps
+- Tag v0.1.0 (or next version) to trigger the release workflow
+- Create GitHub release from generated artifacts
+- Publish to crates.io (optional)
