@@ -18,7 +18,7 @@ shell, network, or secrets.
 - **Local HTTP gateway** — Axum-based REST API with rate limiting, concurrency limiting, request timeout, body limit, CORS, security headers, bearer auth.
 - **MCP security adapter** — Model Context Protocol proxy that evaluates tool calls against policy before forwarding.
 - **CLI** — 13 subcommands with stable exit codes, JSON and human output modes, secret-sanitized errors.
-- **Dashboard** — React/TypeScript SPA with live request view, audit timeline, pending approvals, policy management, system health, SSRF/redaction verification.
+- **Dashboard** — React/TypeScript SPA with live request view, audit timeline and chain verification, pending approvals, policy management, and system health.
 - **Property tests** — 17 proptest functions across 5 crates (core, policy, redaction, audit, approval).
 - **Fuzz targets** — 7 cargo-fuzz targets for JSON, TOML, path, URL, redaction, audit, and MCP inputs.
 - **Criterion benchmarks** — 8 benchmarks for validation, policy evaluation, glob matching, digest, redaction, audit, approval lookup, and runtime.
@@ -59,11 +59,30 @@ cargo run -p kavach-cli -- policy check \
     --policy config/policy.example.toml \
     --request tests/fixtures/request_allow.json
 
-# Start the HTTP gateway
-cargo run -p kavach-cli -- serve --config config/kavach.example.toml
+# Build the dashboard served by the gateway
+npm --prefix dashboard ci
+npm --prefix dashboard run build
+
+# Start the HTTP gateway with a CSPRNG-generated 32-byte token.
+# Keep the token private; the gateway never prints it.
+KAVACH_GATEWAY_TOKEN="$(openssl rand -hex 32)" \
+  cargo run -p kavach-cli -- serve --config config/kavach.example.toml
 
 # Run the end-to-end demo
 powershell -File scripts/demo.ps1
+```
+
+Open `http://127.0.0.1:7421/dashboard/` and enter the gateway token. The token
+is kept in browser memory only, so a page refresh requires authentication
+again. Runtime database parent directories are created automatically.
+
+On PowerShell, generate and set the token without printing it:
+
+```powershell
+$bytes = [byte[]]::new(32)
+[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+$env:KAVACH_GATEWAY_TOKEN = [Convert]::ToHexString($bytes).ToLowerInvariant()
+cargo run -p kavach-cli -- serve --config config/kavach.example.toml
 ```
 
 ## CLI exit codes
@@ -106,6 +125,8 @@ powershell -File scripts/demo.ps1
 - **No sandboxing**: Enforcement operates at the OS API level, not via containers or seccomp.
 - **Performance**: Not tested at hyperscale. Benchmarks available in each crate's `benches/` directory.
 - **Fuzz targets**: Require nightly Rust. Run separately via `cd fuzz && cargo fuzz run <target>`.
+- **Gateway restart boundary**: Raw approval tokens and issued execution permits are intentionally held only in process memory. Pending approvals persist, but an approval already granted before a gateway restart must be re-requested before it can be exchanged for a permit.
+- **Dashboard sessions**: Bearer tokens are never persisted in browser storage. Refreshing or reopening the dashboard requires re-entry.
 
 ## License
 

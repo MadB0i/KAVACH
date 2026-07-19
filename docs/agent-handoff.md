@@ -1,57 +1,74 @@
 # KAVACH Agent Handoff
 
-Last updated: 2026-07-16
+Last updated: 2026-07-19
 
-## Current Task
-Phase 18 — Final Documentation, Packaging & Release Hardening — COMPLETE.
+## State
 
-## Key Changes (This Session)
+The principal repository audit, security-flow repair, real gateway exercise,
+dashboard redesign, and requested local verification matrix are complete.
+Changes are intentionally uncommitted.
 
-### Phase 18: Documentation & Release Hardening
-- Deleted stale `docs/roadmap.md` (early planning doc, not actual state)
-- Rewrote README.md to match actual 12-crate workspace with all features documented
-- Created SECURITY.md (vulnerability reporting, scope, supported versions)
-- Created CONTRIBUTING.md (workflow, code style, PR checklist)
-- Created CHANGELOG.md (0.1.0 release notes)
-- Created `config/policy.example.toml` (8 example rules with comments)
-- Updated `.gitignore` for `dashboard/dist`, `node_modules/`, `*.db`, `/data/`
-- Removed unused `SHELL_FLAGS` constant from command.rs
-- Reviewed all 48 `#[allow(...)]` annotations — all justified
-- Reviewed all error/logging paths for secret leakage — none found
-- Verified all 6 examples pass (32/32 scenarios)
-- Verified all examples use temp files, no destructive ops, no fake data
+Do not rely on the former “phase complete” document. The independently verified
+state is recorded in [implementation-state.md](implementation-state.md), and
+the actual trust boundaries are in [architecture.md](architecture.md).
 
-### Docs Verified to Match Real Behavior
-- `docs/runtime.md` — accurate
-- `docs/redaction.md` — accurate
-- `docs/approvals.md` — accurate
-- `examples/README.md` — accurate
+## Highest-impact fixes
 
-### Repository Release-Readiness Checklist
-- [x] All 18 phases complete
-- [x] Cargo workspace builds and tests pass (631 tests, debug + release)
-- [x] All clippy lints pass (-D warnings, zero violations)
-- [x] All 6 examples pass (32/32 scenarios)
-- [x] All 10 demo scenarios pass
-- [x] CI workflows created (fmt, check, clippy, test, doc, bench, dashboard)
-- [x] Security scanning configured (cargo-deny, cargo audit, CodeQL, npm audit)
-- [x] Release workflow creates SHA-256 checksummed artifacts
-- [x] CHANGELOG.md documents the release
-- [x] LICENSE is Apache-2.0
-- [x] SECURITY.md defines reporting process
-- [x] CONTRIBUTING.md documents PR process
-- [x] `.gitignore` covers generated files and secrets
-- [x] No secrets, databases, node_modules, target, dist, or local config tracked
-- [x] No placeholders, fake claims, or unfinished TODOs remain
-- [x] 48 `#[allow(...)]` annotations reviewed — none are broad or unjustified
-- [x] Error/logging paths reviewed — no secret leakage
-- [x] Public APIs reviewed — all documented
-- [x] README includes supported platforms and honest limitations
-- [x] Release workflow does NOT publish automatically
-- [x] `docs/implementation-state.md` updated
-- [x] `docs/agent-handoff.md` updated
+- Runtime/adapters no longer double-consume execution permits.
+- The gateway no longer trusts serialized client permits; permit execution uses
+  a bounded server-side take-once registry.
+- Runtime redaction and audit failures now fail closed.
+- The CLI and approval broker share the runtime audit store, so approval
+  transitions appear in the dashboard database.
+- Approval transitions are preflighted before audit append; empty expiry sweeps
+  do not write false events.
+- Approval tokens are not exposed by the dashboard API. Approval and token
+  exchange are separate endpoints, with the raw token retained in process
+  memory.
+- The gateway requires an operator-supplied exact 64-hex bearer token and never
+  prints it.
+- Dynamic approval routes, response envelopes, readiness checks, policy
+  metadata, newest-first audit pagination, static dashboard routes, and SPA deep
+  links were corrected.
+- Config loading now preserves all policy files, persists the approval database
+  setting, configures redaction, distinguishes timeouts from permit TTL, and
+  verifies the audit chain before startup.
+- Example policies/configuration and the documented request fixture are valid.
+- The PowerShell demo resolves its own repository root and reports native
+  command failures correctly.
+- Tracked runtime SQLite artifacts were removed.
+- The dashboard was rebuilt as a real dark enterprise security console, with
+  memory-only authentication and no fabricated data.
 
-## Next Steps
-- Tag v0.1.0 (or next version) to trigger the release workflow
-- Create GitHub release from generated artifacts
-- Publish to crates.io (optional)
+## Verification
+
+All requested Rust commands pass, including debug/release tests (633 listed
+tests), docs, Clippy with warnings denied, and benchmark compilation. A clean
+dashboard install reports 0 vulnerabilities; lint, 38 tests, and production
+build pass. The direct demo passes 10/10 and `scripts/demo.ps1` passes every
+example.
+
+The live HTTP flow was also verified using fresh temporary databases:
+evaluate → approval → approve → token exchange → server-held permit → real
+filesystem execution → correlated audit events → valid chain. Pending approval
+persistence across restart was checked.
+
+## Operational notes
+
+- Set `KAVACH_GATEWAY_TOKEN` to exactly 64 hexadecimal characters before
+  `kavach serve`.
+- Build the dashboard before expecting `/dashboard/` to be served.
+- Browser authentication is intentionally lost on refresh.
+- Pending approvals persist; raw approved tokens and permits do not survive a
+  gateway restart.
+- The repository contains one PowerShell demo script and one separate
+  `demo-agent` binary, not two script files.
+- On this Windows host, use `npm.cmd` and an explicit PowerShell execution-policy
+  bypass because the `.ps1` command shims are machine-blocked.
+
+## Worktree
+
+No commit, push, tag, release, or publication was performed. The dirty worktree
+contains the audited implementation/docs/dashboard changes and intentional
+deletions of tracked database artifacts. Inspect `git status --short` before any
+future staging.
