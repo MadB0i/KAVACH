@@ -8,7 +8,6 @@ import ErrorState from '../components/ErrorState';
 
 interface AgentInfo {
   agent_id: string;
-  session_count: number;
   last_activity: string;
   total_requests: number;
 }
@@ -21,11 +20,11 @@ export default function AgentsSessions() {
   const fetchAgents = useCallback(async () => {
     try {
       const events = await getAuditEvents({ limit: 200 });
-      const agentMap = new Map<string, { sessions: Set<string>; last: string; count: number }>();
+      const agentMap = new Map<string, { last: string; count: number }>();
       for (const ev of events) {
         if (ev.agent_id) {
           if (!agentMap.has(ev.agent_id)) {
-            agentMap.set(ev.agent_id, { sessions: new Set(), last: '', count: 0 });
+            agentMap.set(ev.agent_id, { last: '', count: 0 });
           }
           const entry = agentMap.get(ev.agent_id)!;
           entry.count++;
@@ -36,7 +35,6 @@ export default function AgentsSessions() {
       }
       const result: AgentInfo[] = Array.from(agentMap.entries()).map(([id, info]) => ({
         agent_id: id,
-        session_count: info.sessions.size || 1,
         last_activity: info.last || 'Unknown',
         total_requests: info.count,
       }));

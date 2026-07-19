@@ -96,7 +96,7 @@ export default function LiveRequests() {
               <span className="live-request-item__time">
                 {ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '?'}
               </span>
-              <span className="live-request-item__id" title={ev.request_id}>
+              <span className="live-request-item__id" title={ev.request_id || undefined}>
                 {ev.request_id ? ev.request_id.slice(0, 16) : '\u2014'}
               </span>
               <span className="live-request-item__op">{ev.operation || '\u2014'}</span>

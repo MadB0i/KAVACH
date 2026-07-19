@@ -51,19 +51,19 @@ export default function SystemHealth() {
         title="System Health"
         subtitle={
           statusInfo
-            ? `${statusInfo.service} v${statusInfo.version || '?'} \u2014 Bind: ${statusInfo.bind_address || '?'}`
+            ? `${statusInfo.service} v${statusInfo.version || '?'} \u2014 Bind: ${statusInfo.bind || '?'}`
             : undefined
         }
       />
 
-      {statusInfo && statusInfo.uptime !== undefined && (
+      {statusInfo && statusInfo.uptime_seconds !== undefined && (
         <div className="health-info">
           <p><strong>Service</strong> {statusInfo.service}</p>
           <p><strong>Version</strong> {statusInfo.version || '?'}</p>
-          <p><strong>Bind Address</strong> {statusInfo.bind_address || '?'}</p>
+          <p><strong>Bind Address</strong> {statusInfo.bind || '?'}</p>
           <p>
             <strong>Uptime</strong>{' '}
-            {Math.floor(statusInfo.uptime / 3600)}h {Math.floor((statusInfo.uptime % 3600) / 60)}m
+            {Math.floor(statusInfo.uptime_seconds / 3600)}h {Math.floor((statusInfo.uptime_seconds % 3600) / 60)}m
           </p>
         </div>
       )}
@@ -72,10 +72,10 @@ export default function SystemHealth() {
         <div className="health-grid health-grid--large">
           {[
             { label: 'API', status: health?.status },
-            { label: 'Database', status: health?.database },
-            { label: 'Policy Engine', status: health?.policy_engine },
-            { label: 'Audit Store', status: health?.audit_store },
-            { label: 'Approval Store', status: health?.approval_store },
+            { label: 'Readiness', status: ready?.ready ? 'ready' : 'not ready' },
+            { label: 'Policy Engine', status: ready ? `${ready.policy_count ?? 0} loaded` : undefined },
+            { label: 'Audit Store', status: ready?.audit_store },
+            { label: 'Approval Store', status: ready?.approval_store },
           ].map((c) => (
             <div key={c.label} className="health-card health-card--detailed">
               <h3 className="health-card__title">{c.label}</h3>

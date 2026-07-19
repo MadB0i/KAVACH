@@ -96,27 +96,27 @@ export default function PendingApprovals() {
       ) : (
         <DataTable
           columns={[
-            { key: 'id', header: 'ID', className: 'cell-mono cell-truncate', render: (a) => a.id },
+            { key: 'id', header: 'Approval ID', className: 'cell-mono cell-truncate', render: (a) => truncate(a.approval_id, 18) },
             { key: 'request_id', header: 'Request ID', className: 'cell-mono cell-truncate', render: (a) => truncate(a.request_id, 16) },
             { key: 'operation', header: 'Operation', render: (a) => a.operation || '\u2014' },
-            { key: 'resource', header: 'Resource', render: (a) => truncate(a.resource) },
+            { key: 'resource', header: 'Resource Kind', render: (a) => a.resource_kind || '\u2014' },
             { key: 'summary', header: 'Summary', className: 'cell-truncate', render: (a) => truncate(a.summary, 50) },
             { key: 'created', header: 'Created', render: (a) => a.created_at ? new Date(a.created_at).toLocaleString() : '\u2014' },
             { key: 'actions', header: 'Actions', className: 'cell-actions', render: (a) => (
               <>
                 <button
                   className="btn btn--success btn--sm"
-                  onClick={() => setConfirmAction({ type: 'approve', id: a.id, summary: a.summary || '' })}
-                  disabled={actionLoading === a.id}
-                  aria-label={`Approve ${a.id}`}
+                  onClick={() => setConfirmAction({ type: 'approve', id: a.approval_id, summary: a.summary || '' })}
+                  disabled={actionLoading === a.approval_id}
+                  aria-label={`Approve ${a.approval_id}`}
                 >
                   Approve
                 </button>
                 <button
                   className="btn btn--danger btn--sm"
-                  onClick={() => setConfirmAction({ type: 'deny', id: a.id, summary: a.summary || '' })}
-                  disabled={actionLoading === a.id}
-                  aria-label={`Deny ${a.id}`}
+                  onClick={() => setConfirmAction({ type: 'deny', id: a.approval_id, summary: a.summary || '' })}
+                  disabled={actionLoading === a.approval_id}
+                  aria-label={`Deny ${a.approval_id}`}
                 >
                   Deny
                 </button>
@@ -124,7 +124,7 @@ export default function PendingApprovals() {
             )},
           ]}
           data={approvals}
-          keyField={(a) => a.id}
+          keyField={(a) => a.approval_id}
           emptyTitle="No Pending Approvals"
           emptyDescription="All requests have been processed."
         />

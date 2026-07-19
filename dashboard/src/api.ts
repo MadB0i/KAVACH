@@ -36,11 +36,17 @@ export async function fetchApi<T>(path: string, options: RequestInit = {}): Prom
   const url = `${base}${path}`;
   const headers = { ...getAuthHeaders(), ...(options.headers as Record<string, string> || {}) };
 
-  const response = await fetch(url, { ...options, headers });
+  let response: Response;
+  try {
+    response = await fetch(url, { ...options, headers });
+  } catch {
+    throw new ApiError('CONNECTION_FAILED', 'Connection to the KAVACH gateway failed.');
+  }
 
   if (!response.ok) {
     if (response.status === 401) {
       clearAuthToken();
+      window.dispatchEvent(new Event('kavach:unauthorized'));
       throw new ApiError('UNAUTHORIZED', 'Authentication failed. Please log in again.');
     }
     let errorData: ApiResponse<never>;
@@ -59,7 +65,12 @@ export async function fetchApi<T>(path: string, options: RequestInit = {}): Prom
   if (!text) {
     return undefined as T;
   }
-  const json = JSON.parse(text) as ApiResponse<T>;
+  let json: ApiResponse<T>;
+  try {
+    json = JSON.parse(text) as ApiResponse<T>;
+  } catch {
+    throw new ApiError('INVALID_RESPONSE', 'The gateway returned an invalid response.');
+  }
   if (json.status === 'error' && json.error) {
     throw new ApiError(json.error.code, json.error.message, json.request_id);
   }
@@ -86,17 +97,17 @@ export function getApproval(id: string): Promise<ApprovalRecord> {
   return fetchApi<ApprovalRecord>(`/api/approvals/${encodeURIComponent(id)}`);
 }
 
-export function approveApproval(id: string, actor: string): Promise<{ success: boolean }> {
-  return fetchApi<{ success: boolean }>(`/api/approvals/${encodeURIComponent(id)}/approve`, {
+export function approveApproval(id: string, actor: string): Promise<{ approval_id: string; outcome: string }> {
+  return fetchApi<{ approval_id: string; outcome: string }>(`/api/approvals/${encodeURIComponent(id)}/approve`, {
     method: 'POST',
     body: JSON.stringify({ actor }),
   });
 }
 
-export function denyApproval(id: string, actor: string, reason?: string): Promise<{ success: boolean }> {
+export function denyApproval(id: string, actor: string, reason?: string): Promise<{ approval_id: string; outcome: string }> {
   const body: Record<string, string> = { actor };
   if (reason) body.reason = reason;
-  return fetchApi<{ success: boolean }>(`/api/approvals/${encodeURIComponent(id)}/deny`, {
+  return fetchApi<{ approval_id: string; outcome: string }>(`/api/approvals/${encodeURIComponent(id)}/deny`, {
     method: 'POST',
     body: JSON.stringify(body),
   });
@@ -104,6 +115,7 @@ export function denyApproval(id: string, actor: string, reason?: string): Promis
 
 export interface AuditEventParams {
   after?: number;
+  before?: number;
   limit?: number;
   category?: string;
   request_id?: string;
@@ -112,6 +124,7 @@ export interface AuditEventParams {
 export function getAuditEvents(params?: AuditEventParams): Promise<AuditEvent[]> {
   const search = new URLSearchParams();
   if (params?.after !== undefined) search.set('after', String(params.after));
+  if (params?.before !== undefined) search.set('before', String(params.before));
   if (params?.limit !== undefined) search.set('limit', String(params.limit));
   if (params?.category) search.set('category', params.category);
   if (params?.request_id) search.set('request_id', params.request_id);

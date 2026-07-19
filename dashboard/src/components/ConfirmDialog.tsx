@@ -29,20 +29,39 @@ export default function ConfirmDialog({
   const reasonInputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (open) {
-      setReason('');
-      setTimeout(() => confirmBtnRef.current?.focus(), 50);
-    }
-  }, [open]);
-
-  useEffect(() => {
     if (!open) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    setReason('');
+    const focusTimer = window.setTimeout(() => {
+      (showReason ? reasonInputRef.current : confirmBtnRef.current)?.focus();
+    }, 0);
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
       if (e.key === 'Escape') onCancel();
+      if (e.key === 'Tab' && dialogRef.current) {
+        const focusable = Array.from(
+          dialogRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          ),
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last?.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first?.focus();
+        }
+      }
     };
     document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [open, onCancel]);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener('keydown', handleKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [open, onCancel, showReason]);
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && !showReason) {
@@ -61,8 +80,8 @@ export default function ConfirmDialog({
   };
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
-      <div className="modal" ref={dialogRef} onKeyDown={handleKeyDown}>
+    <div className="modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+      <div className="modal" ref={dialogRef} onKeyDown={handleKeyDown} role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
         <h2 className="modal__title" id="confirm-dialog-title">{title}</h2>
         <p className="modal__message">{message}</p>
         {children}

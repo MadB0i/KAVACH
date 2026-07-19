@@ -4,8 +4,7 @@ import { ThemeContext } from './useTheme';
 function getInitialTheme(): 'light' | 'dark' {
   const stored = localStorage.getItem('kavach-theme');
   if (stored === 'dark' || stored === 'light') return stored;
-  if (window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
-  return 'light';
+  return 'dark';
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {

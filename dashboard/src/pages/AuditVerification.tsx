@@ -126,7 +126,8 @@ export default function AuditVerification() {
               <DataTable
                 columns={[
                   { key: 'sequence', header: 'Sequence', className: 'cell-mono', render: (err) => `#${err.sequence}` },
-                  { key: 'error', header: 'Error', className: 'cell-mono', render: (err) => err.error },
+                  { key: 'kind', header: 'Kind', className: 'cell-mono', render: (err) => err.kind },
+                  { key: 'detail', header: 'Detail', render: (err) => err.detail },
                 ]}
                 data={result.errors}
                 keyField={(err) => err.sequence}

@@ -1,6 +1,5 @@
 import LoadingState from './LoadingState';
 import ErrorState from './ErrorState';
-import StatusBadge from './StatusBadge';
 
 interface MetricCardProps {
   label: string;
@@ -25,7 +24,7 @@ export default function MetricCard({
 }: MetricCardProps) {
   return (
     <div
-      className={`metric-card ${onClick ? 'metric-card--clickable' : ''}`}
+      className={`metric-card ${variant ? `metric-card--${variant}` : ''} ${onClick ? 'metric-card--clickable' : ''}`}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
@@ -41,9 +40,13 @@ export default function MetricCard({
         <ErrorState title="Error" message={error} compact />
       ) : (
         <>
-          <div className="metric-card__value">
-            {variant ? <StatusBadge variant={variant} label={String(value)} /> : value}
-          </div>
+          <div className="metric-card__value">{value}</div>
+          {variant && (
+            <span className="metric-card__status" aria-label={`${label} status`}>
+              <span className="metric-card__status-dot" aria-hidden="true" />
+              Gateway data
+            </span>
+          )}
           {subtitle && <div className="metric-card__sub">{subtitle}</div>}
         </>
       )}

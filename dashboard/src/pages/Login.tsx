@@ -1,11 +1,12 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import { ApiError } from '../types';
 import { useTheme } from '../context/useTheme';
 
 export default function Login() {
   const [tokenInput, setTokenInput] = useState('');
+  const [actorInput, setActorInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { login, isAuthenticated } = useAuth();
@@ -13,8 +14,7 @@ export default function Login() {
   const navigate = useNavigate();
 
   if (isAuthenticated) {
-    navigate('/', { replace: true });
-    return null;
+    return <Navigate to="/" replace />;
   }
 
   const handleSubmit = async (e: FormEvent) => {
@@ -24,9 +24,13 @@ export default function Login() {
       setError('Please enter an authentication token');
       return;
     }
+    if (!actorInput.trim()) {
+      setError('Please enter your operator identifier');
+      return;
+    }
     setLoading(true);
     try {
-      await login(tokenInput.trim());
+      await login(tokenInput.trim(), actorInput.trim());
       navigate('/', { replace: true });
     } catch (err) {
       if (err instanceof ApiError) {
@@ -43,11 +47,26 @@ export default function Login() {
     <div className="login-page">
       <div className="login-card">
         <div className="login-card__header">
-          <div className="login-card__logo">K</div>
-          <h2 className="login-card__title">KAVACH Dashboard</h2>
-          <p className="login-card__subtitle">Zero-Trust Runtime</p>
+          <div className="login-card__logo" aria-hidden="true">K</div>
+          <div className="login-card__eyebrow">SECURE OPERATOR ACCESS</div>
+          <h2 className="login-card__title">KAVACH Control Plane</h2>
+          <p className="login-card__subtitle">Authenticate to inspect policy decisions and the verified audit chain.</p>
         </div>
         <form onSubmit={handleSubmit}>
+          <div className="form-group">
+            <label htmlFor="actor" className="form-label">Operator ID</label>
+            <input
+              id="actor"
+              type="text"
+              className="form-input"
+              value={actorInput}
+              onChange={(e) => setActorInput(e.target.value)}
+              placeholder="e.g. security-operator"
+              autoComplete="username"
+              spellCheck={false}
+              autoFocus
+            />
+          </div>
           <div className="form-group">
             <label htmlFor="token" className="form-label">Authentication Token</label>
             <input
@@ -57,7 +76,8 @@ export default function Login() {
               value={tokenInput}
               onChange={(e) => setTokenInput(e.target.value)}
               placeholder="Enter your API token"
-              autoFocus
+              autoComplete="off"
+              spellCheck={false}
               aria-describedby={error ? 'login-error' : undefined}
             />
           </div>

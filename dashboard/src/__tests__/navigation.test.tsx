@@ -56,7 +56,7 @@ describe('Navigation', () => {
       'Configuration', 'Audit Verification',
     ];
     for (const label of links) {
-      expect(screen.getByText(label)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
     }
   });
 

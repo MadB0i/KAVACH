@@ -37,13 +37,13 @@ describe('ThemeContext', () => {
     mockMatchMedia(false);
   });
 
-  it('uses light theme when no preference', () => {
+  it('uses dark theme when no preference', () => {
     render(
       <ThemeProvider>
         <TestComponent />
       </ThemeProvider>
     );
-    expect(screen.getByTestId('theme').textContent).toBe('light');
+    expect(screen.getByTestId('theme').textContent).toBe('dark');
   });
 
   it('uses dark theme when system prefers dark', () => {

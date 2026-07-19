@@ -81,9 +81,9 @@ export default function Policies() {
       ) : (
         <div className="policy-grid">
           {policies.map((p) => (
-            <div key={p.id} className="policy-card">
-              <h3 className="policy-card__name">{p.name || p.id}</h3>
-              <div className="policy-card__id">{p.id}</div>
+            <div key={p.policy_id} className="policy-card">
+              <h3 className="policy-card__name">{p.policy_name || p.policy_id}</h3>
+              <div className="policy-card__id">{p.policy_id}</div>
               <div className="policy-card__meta">
                 <span><strong>Rules:</strong> {p.rule_count ?? '?'}</span>
                 <span>
@@ -115,7 +115,7 @@ export default function Policies() {
             className="modal__textarea"
             value={reloadPaths}
             onChange={(e) => setReloadPaths(e.target.value)}
-            placeholder={"/etc/kavach/policies/default.yaml\n/etc/kavach/policies/custom.yaml"}
+            placeholder={"./config/default-policy.toml\n./config/custom-policy.toml"}
             rows={4}
           />
         </div>

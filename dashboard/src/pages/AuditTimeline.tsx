@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { getAuditEvents } from '../api';
 import type { AuditEvent } from '../types';
 import PageHeader from '../components/PageHeader';
@@ -6,6 +7,7 @@ import EmptyState from '../components/EmptyState';
 import LoadingState from '../components/LoadingState';
 import ErrorState from '../components/ErrorState';
 import StatusBadge from '../components/StatusBadge';
+import DetailDrawer from '../components/DetailDrawer';
 
 const PAGE_SIZE = 25;
 
@@ -18,9 +20,17 @@ const categoryVariant: Record<string, 'success' | 'error' | 'warning' | 'info'> 
   approve: 'warning',
   info: 'info',
   securitywarning: 'warning',
+  decisionallow: 'success',
+  decisiondeny: 'error',
+  approvalrequested: 'warning',
+  approvalapproved: 'success',
+  approvaldenied: 'error',
+  executionfailed: 'error',
+  executionsucceeded: 'success',
 };
 
 export default function AuditTimeline() {
+  const [searchParams] = useSearchParams();
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const eventsRef = useRef(events);
   eventsRef.current = events;
@@ -28,21 +38,27 @@ export default function AuditTimeline() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState('');
-  const [requestIdFilter, setRequestIdFilter] = useState('');
+  const [requestIdFilter, setRequestIdFilter] = useState(() => searchParams.get('request') || '');
+  const [selectedEvent, setSelectedEvent] = useState<AuditEvent | null>(null);
 
   const fetchEvents = useCallback(async (append = false) => {
     if (!append) setLoading(true);
     else setLoadingMore(true);
     try {
-      const after = append && eventsRef.current.length > 0 ? eventsRef.current[eventsRef.current.length - 1]!.sequence : undefined;
+      const before = append && eventsRef.current.length > 0
+        ? Math.min(...eventsRef.current.map((event) => event.sequence))
+        : undefined;
       const data = await getAuditEvents({
-        after,
+        before,
         limit: PAGE_SIZE,
         category: categoryFilter || undefined,
         request_id: requestIdFilter || undefined,
       });
       if (append) {
-        setEvents((prev) => [...prev, ...data]);
+        setEvents((prev) => {
+          const existing = new Set(prev.map((event) => event.sequence));
+          return [...prev, ...data.filter((event) => !existing.has(event.sequence))];
+        });
       } else {
         setEvents(data);
       }
@@ -86,11 +102,17 @@ export default function AuditTimeline() {
             onChange={(e) => { setCategoryFilter(e.target.value); setEvents([]); }}
           >
             <option value="">All</option>
-            <option value="allow">Allow</option>
-            <option value="deny">Deny</option>
-            <option value="approval">Approval</option>
-            <option value="info">Info</option>
-            <option value="securitywarning">Security Warning</option>
+            <option value="DecisionAllow">Allowed</option>
+            <option value="DecisionDeny">Denied</option>
+            <option value="ApprovalRequested">Approval requested</option>
+            <option value="ApprovalApproved">Approval approved</option>
+            <option value="ApprovalDenied">Approval denied</option>
+            <option value="ApprovalExpired">Approval expired</option>
+            <option value="ApprovalConsumed">Approval consumed</option>
+            <option value="ExecutionStarted">Execution started</option>
+            <option value="ExecutionSucceeded">Execution succeeded</option>
+            <option value="ExecutionFailed">Execution failed</option>
+            <option value="SecurityWarning">Security warning</option>
           </select>
         </div>
         <div className="form-group">
@@ -111,7 +133,13 @@ export default function AuditTimeline() {
       ) : (
         <div className="timeline" role="list">
           {events.map((ev) => (
-            <div key={`${ev.sequence}-${ev.timestamp}`} className="timeline__item" role="listitem">
+            <button
+              key={`${ev.sequence}-${ev.timestamp}`}
+              className="timeline__item timeline__item--button"
+              role="listitem"
+              onClick={() => setSelectedEvent(ev)}
+              aria-label={`Open audit event ${ev.sequence}`}
+            >
               <div className="timeline__marker" aria-hidden="true">
                 <span className={`timeline__dot timeline__dot--${getVariant(ev)}`} />
               </div>
@@ -130,7 +158,7 @@ export default function AuditTimeline() {
                 </div>
                 {ev.summary && <p className="timeline__summary">{ev.summary}</p>}
               </div>
-            </div>
+            </button>
           ))}
         </div>
       )}
@@ -147,6 +175,27 @@ export default function AuditTimeline() {
           </button>
         </div>
       )}
+
+      <DetailDrawer
+        open={selectedEvent !== null}
+        title={selectedEvent ? `Audit event #${selectedEvent.sequence}` : 'Audit event'}
+        onClose={() => setSelectedEvent(null)}
+      >
+        {selectedEvent && (
+          <dl className="detail-list">
+            <div><dt>Category</dt><dd>{selectedEvent.category}</dd></div>
+            <div><dt>Decision</dt><dd>{selectedEvent.decision || '\u2014'}</dd></div>
+            <div><dt>Request ID</dt><dd><code>{selectedEvent.request_id || '\u2014'}</code></dd></div>
+            <div><dt>Agent</dt><dd>{selectedEvent.agent_id || '\u2014'}</dd></div>
+            <div><dt>Operation</dt><dd>{selectedEvent.operation || '\u2014'}</dd></div>
+            <div><dt>Resource</dt><dd>{selectedEvent.resource_kind || '\u2014'}</dd></div>
+            <div><dt>Reason</dt><dd>{selectedEvent.reason_code || '\u2014'}</dd></div>
+            <div><dt>Matched rules</dt><dd>{selectedEvent.matched_rule_ids?.join(', ') || '\u2014'}</dd></div>
+            <div><dt>Current hash</dt><dd><code>{selectedEvent.current_hash || '\u2014'}</code></dd></div>
+            <div><dt>Previous hash</dt><dd><code>{selectedEvent.previous_hash || '\u2014'}</code></dd></div>
+          </dl>
+        )}
+      </DetailDrawer>
     </div>
   );
 }

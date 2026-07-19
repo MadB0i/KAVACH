@@ -51,13 +51,13 @@ export default function ConfigSummary() {
           </div>
           <div className="config-row">
             <span className="config-row__key">Bind Address</span>
-            <span className="config-row__value">{statusInfo?.bind_address || '?'}</span>
+            <span className="config-row__value">{statusInfo?.bind || '?'}</span>
           </div>
           <div className="config-row">
             <span className="config-row__key">Uptime</span>
             <span className="config-row__value">
-              {statusInfo?.uptime !== undefined
-                ? `${Math.floor(statusInfo.uptime / 3600)}h ${Math.floor((statusInfo.uptime % 3600) / 60)}m`
+              {statusInfo?.uptime_seconds !== undefined
+                ? `${Math.floor(statusInfo.uptime_seconds / 3600)}h ${Math.floor((statusInfo.uptime_seconds % 3600) / 60)}m`
                 : '?'}
             </span>
           </div>
@@ -70,8 +70,8 @@ export default function ConfigSummary() {
             <div className="config-empty">No policies loaded</div>
           ) : (
             policies.map((p) => (
-              <div key={p.id} className="config-row">
-                <span className="config-row__key">{p.name || p.id}</span>
+              <div key={p.policy_id} className="config-row">
+                <span className="config-row__key">{p.policy_name || p.policy_id}</span>
                 <span className="config-row__value">
                   {p.rule_count ?? '?'} rules, effect: {p.default_effect || '?'}
                 </span>

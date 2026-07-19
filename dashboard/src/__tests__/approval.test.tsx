@@ -24,8 +24,8 @@ function renderWithProviders(ui: React.ReactElement) {
 }
 
 const mockApprovals = [
-  { id: 'approval-1', request_id: 'req-1', operation: 'read', resource: '/data', summary: 'Read access to /data', created_at: '2025-01-01T00:00:00Z', expires_at: '2025-01-02T00:00:00Z' },
-  { id: 'approval-2', request_id: 'req-2', operation: 'write', resource: '/config', summary: 'Write access to configuration', created_at: '2025-01-01T01:00:00Z', expires_at: '2025-01-02T01:00:00Z' },
+  { approval_id: 'approval-1', request_id: 'req-1', operation: 'read', resource_kind: 'file', summary: 'Read access to /data', created_at: '2025-01-01T00:00:00Z', expires_at: '2025-01-02T00:00:00Z', state: 'pending' },
+  { approval_id: 'approval-2', request_id: 'req-2', operation: 'write', resource_kind: 'file', summary: 'Write access to configuration', created_at: '2025-01-01T01:00:00Z', expires_at: '2025-01-02T01:00:00Z', state: 'pending' },
 ];
 
 describe('PendingApprovals', () => {
@@ -53,7 +53,7 @@ describe('PendingApprovals', () => {
 
   it('approve action calls correct API', async () => {
     vi.mocked(api.getApprovals).mockResolvedValue(mockApprovals);
-    vi.mocked(api.approveApproval).mockResolvedValue({ success: true });
+    vi.mocked(api.approveApproval).mockResolvedValue({ approval_id: 'approval-1', outcome: 'approved' });
     renderWithProviders(<PendingApprovals />);
     await waitFor(() => {
       expect(screen.getByText('read')).toBeInTheDocument();
@@ -73,7 +73,7 @@ describe('PendingApprovals', () => {
 
   it('deny shows confirm dialog with reason', async () => {
     vi.mocked(api.getApprovals).mockResolvedValue(mockApprovals);
-    vi.mocked(api.denyApproval).mockResolvedValue({ success: true });
+    vi.mocked(api.denyApproval).mockResolvedValue({ approval_id: 'approval-1', outcome: 'denied' });
     renderWithProviders(<PendingApprovals />);
     await waitFor(() => {
       expect(screen.getByText('read')).toBeInTheDocument();

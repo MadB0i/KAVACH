@@ -54,11 +54,10 @@ describe('Sensitive Data Handling', () => {
     expect(localStorage.getItem('kavach_token')).toBeNull();
   });
 
-  it('token is in sessionStorage not localStorage', () => {
-    sessionStorage.setItem('kavach_token', 'session-token');
+  it('token is not stored in sessionStorage', () => {
+    setAuthToken('session-token');
     expect(localStorage.getItem('kavach_token')).toBeNull();
-    expect(sessionStorage.getItem('kavach_token')).toBe('session-token');
-    sessionStorage.removeItem('kavach_token');
+    expect(sessionStorage.getItem('kavach_token')).toBeNull();
   });
 
   it('approval summaries are truncated', () => {
