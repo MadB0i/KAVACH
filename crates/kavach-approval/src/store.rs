@@ -22,6 +22,13 @@ pub(crate) struct SqliteApprovalStore {
 impl SqliteApprovalStore {
     /// Opens or creates the approval database at the given path.
     pub fn open(path: &str, config: ApprovalStoreConfig) -> Result<Self, ApprovalError> {
+        if let Some(parent) = std::path::Path::new(path)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ApprovalError::database_open(e.to_string()))?;
+        }
         let mut conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
@@ -362,6 +369,21 @@ impl SqliteApprovalStore {
         tx.commit()
             .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
         Ok(())
+    }
+
+    /// Returns whether any Pending or Approved approval has passed its expiry time.
+    pub fn has_overdue(&self, now: &str) -> Result<bool, ApprovalError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM approvals \
+             WHERE state IN ('pending', 'approved') AND expires_at < ?1)",
+            params![now],
+            |row| row.get(0),
+        )
+        .map_err(|e| ApprovalError::transaction_failure(e.to_string()))
     }
 
     /// Expires overdue Pending or Approved approvals and returns the IDs that were expired.

@@ -57,6 +57,8 @@ pub enum AuditEventCategory {
     ApprovalDenied,
     /// An approval request expired without a decision.
     ApprovalExpired,
+    /// An approved one-time token was consumed and exchanged for a permit.
+    ApprovalConsumed,
     /// Execution of an approved action started.
     ExecutionStarted,
     /// Execution of an action completed successfully.
@@ -84,6 +86,7 @@ impl fmt::Display for AuditEventCategory {
             AuditEventCategory::ApprovalApproved => "ApprovalApproved",
             AuditEventCategory::ApprovalDenied => "ApprovalDenied",
             AuditEventCategory::ApprovalExpired => "ApprovalExpired",
+            AuditEventCategory::ApprovalConsumed => "ApprovalConsumed",
             AuditEventCategory::ExecutionStarted => "ExecutionStarted",
             AuditEventCategory::ExecutionSucceeded => "ExecutionSucceeded",
             AuditEventCategory::ExecutionFailed => "ExecutionFailed",

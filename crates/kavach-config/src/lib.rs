@@ -109,6 +109,9 @@ pub struct AuditConfig {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalConfig {
+    /// Path to the SQLite approval database.
+    #[serde(default = "default_approval_database")]
+    pub database: PathBuf,
     /// Default time-to-live for approval requests (seconds).
     #[serde(default = "default_ttl")]
     pub default_ttl_seconds: u64,
@@ -180,6 +183,10 @@ fn default_ttl() -> u64 {
     300
 }
 
+fn default_approval_database() -> PathBuf {
+    PathBuf::from("./data/kavach-approvals.db")
+}
+
 fn default_max_pending() -> usize {
     1000
 }
@@ -247,6 +254,7 @@ struct TomlAudit {
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TomlApproval {
+    database: Option<String>,
     default_ttl_seconds: Option<u64>,
     max_pending: Option<u64>,
 }
@@ -341,6 +349,7 @@ impl Default for KavachConfig {
                 rotation_max_events: default_rotation_max(),
             },
             approval: ApprovalConfig {
+                database: default_approval_database(),
                 default_ttl_seconds: default_ttl(),
                 max_pending: default_max_pending(),
             },
@@ -418,6 +427,10 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<KavachConfig, ConfigError> 
     );
 
     // Approval
+    cfg.approval.database = merge_option(
+        toml_cfg.approval.database.map(PathBuf::from),
+        cfg.approval.database,
+    );
     cfg.approval.default_ttl_seconds = merge_option(
         toml_cfg.approval.default_ttl_seconds,
         cfg.approval.default_ttl_seconds,
@@ -477,6 +490,10 @@ fn apply_env_overrides(mut cfg: KavachConfig) -> Result<KavachConfig, ConfigErro
         cfg.approval.default_ttl_seconds,
         &format!("{ENV_PREFIX}APPROVAL_DEFAULT_TTL"),
     )?;
+    cfg.approval.database = env_override_pathbuf(
+        cfg.approval.database,
+        &format!("{ENV_PREFIX}APPROVAL_DATABASE"),
+    )?;
     cfg.approval.max_pending = env_override_usize(
         cfg.approval.max_pending,
         &format!("{ENV_PREFIX}APPROVAL_MAX_PENDING"),
@@ -499,6 +516,12 @@ fn validate(cfg: &KavachConfig) -> Result<(), ConfigError> {
     if !cfg.security.fail_closed {
         return Err(ConfigError::Validation(
             "security.fail_closed must be true; disabling fail-closed is rejected".into(),
+        ));
+    }
+
+    if !cfg.redaction.enabled {
+        return Err(ConfigError::Validation(
+            "redaction.enabled must be true for the gateway".into(),
         ));
     }
 
@@ -529,6 +552,12 @@ fn validate(cfg: &KavachConfig) -> Result<(), ConfigError> {
     if cfg.approval.default_ttl_seconds == 0 {
         return Err(ConfigError::Validation(
             "approval.default_ttl_seconds must be greater than 0".into(),
+        ));
+    }
+
+    if cfg.approval.database.as_os_str().is_empty() {
+        return Err(ConfigError::Validation(
+            "approval.database must not be empty".into(),
         ));
     }
 
@@ -590,6 +619,7 @@ database = "./data/audit.db"
 rotation_max_events = 50000
 
 [approval]
+database = "./data/approvals.db"
 default_ttl_seconds = 600
 max_pending = 500
 
@@ -612,6 +642,7 @@ format = "json"
         assert_eq!(cfg.audit.database, PathBuf::from("./data/audit.db"));
         assert_eq!(cfg.audit.rotation_max_events, 50000);
         assert_eq!(cfg.approval.default_ttl_seconds, 600);
+        assert_eq!(cfg.approval.database, PathBuf::from("./data/approvals.db"));
         assert_eq!(cfg.approval.max_pending, 500);
         assert_eq!(cfg.logging.level, "debug");
         assert_eq!(cfg.logging.format, "json");

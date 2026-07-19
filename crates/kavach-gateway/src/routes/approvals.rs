@@ -11,7 +11,10 @@ use crate::{
     error::GatewayError,
     middleware::request_id::RequestId,
     state::GatewayState,
-    types::{ApprovalRecordDto, ApproveBody, DenyBody},
+    types::{
+        ApprovalRecordDto, ApproveBody, ConsumeApprovalBody, DenyBody, EvaluateOutcomeDto,
+        PermitDto,
+    },
 };
 
 pub async fn list_approvals(
@@ -91,16 +94,17 @@ pub async fn approve_approval(
             GatewayError::internal(msg)
         }
     })?;
-
-    let token_hex = hex::encode(token.hash());
+    state
+        .approval_tokens
+        .insert(approval_id.clone(), token)
+        .map_err(GatewayError::internal)?;
 
     Ok(Json(serde_json::json!({
         "request_id": rid,
         "status": "success",
         "data": {
             "approval_id": approval_id,
-            "token": token_hex,
-            "token_note": "This token is sensitive. Do not log or share it.",
+            "outcome": "approved",
         },
     })))
 }
@@ -140,5 +144,67 @@ pub async fn deny_approval(
     Ok(Json(serde_json::json!({
         "request_id": rid, "status": "success",
         "data": { "approval_id": approval_id, "outcome": "denied" },
+    })))
+}
+
+pub async fn consume_approval(
+    State(state): State<Arc<GatewayState>>,
+    Extension(rid): Extension<RequestId>,
+    Path(approval_id): Path<String>,
+    Json(body): Json<ConsumeApprovalBody>,
+) -> Result<Json<serde_json::Value>, GatewayError> {
+    let rid = rid.0;
+    let id = ApprovalId::new(&approval_id)
+        .map_err(|_| GatewayError::bad_request(format!("invalid approval_id: {approval_id}")))?;
+    body.request
+        .validate()
+        .map_err(|e| GatewayError::bad_request(format!("invalid request: {e}")))?;
+
+    let token = state
+        .approval_tokens
+        .get(&approval_id)
+        .map_err(GatewayError::internal)?
+        .ok_or_else(|| {
+            GatewayError::conflict(
+                "approval token is unavailable; the approval may predate this gateway process",
+            )
+        })?;
+
+    let runtime = state
+        .runtime
+        .read()
+        .map_err(|_| GatewayError::internal("runtime lock"))?;
+    let outcome = runtime
+        .consume_approval(&body.request, &id, &token)
+        .map_err(|e| {
+            let message = e.to_string();
+            if message.contains("digest") {
+                GatewayError::bad_request(message)
+            } else {
+                GatewayError::conflict(message)
+            }
+        })?;
+
+    let request_id = outcome.request_id().to_string();
+    let permit_secret_hex = hex::encode(outcome.secret());
+    let permit = PermitDto::from(&outcome.permit);
+    state
+        .issued_permits
+        .register(outcome.permit)
+        .map_err(GatewayError::internal)?;
+    state
+        .approval_tokens
+        .remove(&approval_id)
+        .map_err(GatewayError::internal)?;
+
+    let dto = EvaluateOutcomeDto::Permitted {
+        request_id,
+        permit,
+        permit_secret_hex,
+    };
+    Ok(Json(serde_json::json!({
+        "request_id": rid,
+        "status": "success",
+        "data": dto,
     })))
 }

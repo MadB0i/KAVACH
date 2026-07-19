@@ -28,30 +28,53 @@ pub async fn run(config_path: &str, mode: OutputMode) -> Result<(), CliError> {
     }
 
     // Build runtime.
-    let mut runtime = kavach_runtime::runtime::RuntimeBuilder::new()
+    let mut runtime_builder = kavach_runtime::runtime::RuntimeBuilder::new()
         .with_config(kavach_runtime::config::RuntimeConfig {
-            permit_ttl: Duration::from_secs(cfg.server.request_timeout_seconds),
+            audit_fail_closed: cfg.security.fail_closed,
+            redaction_enabled: cfg.redaction.enabled,
             ..Default::default()
         })
         .with_workspace_root(cfg.security.workspace_root.clone())
         .with_audit_db(cfg.audit.database.to_string_lossy().to_string())
-        .build()
-        .map_err(|e| {
-            CliError::new(
-                ExitCode::InternalError,
-                format!("runtime build failed: {e}"),
-            )
-        })?;
+        .with_approval_db(cfg.approval.database.to_string_lossy().to_string());
 
     for policy in policies {
-        let _ = runtime.reload_policies(vec![policy]);
+        runtime_builder = runtime_builder.add_policy(policy);
+    }
+
+    let runtime = runtime_builder.build().map_err(|e| {
+        CliError::new(
+            ExitCode::InternalError,
+            format!("runtime build failed: {e}"),
+        )
+    })?;
+
+    if cfg.audit.verify_on_startup {
+        let report = runtime.audit_store().verify_full().map_err(|e| {
+            CliError::new(
+                ExitCode::AuditError,
+                format!("audit verification failed at startup: {e}"),
+            )
+        })?;
+        if !report.chain_valid {
+            return Err(CliError::new(
+                ExitCode::AuditError,
+                "audit verification failed at startup: chain is invalid",
+            ));
+        }
     }
 
     // Build gateway config.
     let gw_config = GwConfig {
         bind: cfg.server.bind.clone(),
-        request_body_limit: cfg.server.request_body_limit as usize,
+        request_body_limit: usize::try_from(cfg.server.request_body_limit).map_err(|_| {
+            CliError::new(
+                ExitCode::InvalidInput,
+                "server.request_body_limit does not fit this platform",
+            )
+        })?,
         request_timeout: Duration::from_secs(cfg.server.request_timeout_seconds),
+        allow_non_loopback: cfg.server.allow_non_loopback,
         ..Default::default()
     };
 
@@ -59,9 +82,17 @@ pub async fn run(config_path: &str, mode: OutputMode) -> Result<(), CliError> {
     let output = crate::output::CliOutput::with_message(message);
     output.render(mode);
 
+    let gateway_token = std::env::var("KAVACH_GATEWAY_TOKEN").map_err(|_| {
+        CliError::new(
+            ExitCode::InvalidInput,
+            "KAVACH_GATEWAY_TOKEN must contain a 64-character hexadecimal token",
+        )
+    })?;
+
     // Start gateway (blocks until shutdown).
     kavach_gateway::GatewayBuilder::new()
         .with_runtime(runtime)
+        .with_auth_token_hex(Some(gateway_token))
         .with_config(gw_config)
         .start()
         .await

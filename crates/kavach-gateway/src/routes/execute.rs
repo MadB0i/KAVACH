@@ -27,17 +27,28 @@ pub async fn execute(
         GatewayError::bad_request(format!("invalid request: {e}"))
     })?;
 
-    let mut permit = body.reconstruct_permit()?;
     let permit_secret = body.parse_secret()?;
-    let exec_input = convert_input(&body.input)?;
+    let exec_input = PreparedExecutionInput::try_from(&body.input)?;
+    if body.permit.permit_token_hash.len() != 32 {
+        return Err(GatewayError::bad_request(
+            "permit_token_hash must be 32 bytes",
+        ));
+    }
+    let mut permit = state
+        .issued_permits
+        .take(&body.permit.permit_token_hash)
+        .map_err(GatewayError::internal)?
+        .ok_or_else(|| {
+            GatewayError::bad_request("permit was not issued by this gateway or was already used")
+        })?;
 
     let runtime = state
         .runtime
         .read()
         .map_err(|_| GatewayError::internal("runtime lock"))?;
 
-    let result = runtime
-        .execute(&body.request, &mut permit, &permit_secret, exec_input)
+    let result = exec_input
+        .execute(&runtime, &body.request, &mut permit, &permit_secret)
         .map_err(|e| {
             tracing::warn!(request_id = ?rid, "execute failed: {e}");
             let msg = e.to_string();
@@ -59,75 +70,112 @@ pub async fn execute(
     })))
 }
 
-fn convert_input(dto: &ExecutionInputDto) -> Result<ExecutionInput<'static>, GatewayError> {
-    match dto {
-        ExecutionInputDto::None => Ok(ExecutionInput::None),
-        ExecutionInputDto::FilesystemWrite { data } => {
-            let owned = data.clone();
-            Ok(ExecutionInput::FilesystemWrite(Box::leak(
-                owned.into_boxed_slice(),
-            )))
+enum PreparedExecutionInput {
+    None,
+    FilesystemWrite(Vec<u8>),
+    Command(CommandInput),
+    Network(NetworkInput),
+}
+
+impl PreparedExecutionInput {
+    fn execute(
+        self,
+        runtime: &kavach_runtime::runtime::KavachRuntime,
+        request: &kavach_core::request::ToolRequest,
+        permit: &mut kavach_core::permit::ExecutionPermit,
+        permit_secret: &[u8; 32],
+    ) -> Result<kavach_runtime::outcome::ExecutionResult, kavach_runtime::error::RuntimeError> {
+        match self {
+            Self::None => runtime.execute(request, permit, permit_secret, ExecutionInput::None),
+            Self::FilesystemWrite(data) => runtime.execute(
+                request,
+                permit,
+                permit_secret,
+                ExecutionInput::FilesystemWrite(&data),
+            ),
+            Self::Command(input) => runtime.execute(
+                request,
+                permit,
+                permit_secret,
+                ExecutionInput::Command(input),
+            ),
+            Self::Network(input) => runtime.execute(
+                request,
+                permit,
+                permit_secret,
+                ExecutionInput::Network(input),
+            ),
         }
-        ExecutionInputDto::Command {
-            working_directory,
-            env_vars,
-            dry_run,
-            timeout_secs,
-        } => {
-            let env_pairs: Vec<(String, String)> = env_vars
-                .iter()
-                .filter_map(|v| {
-                    if v.len() == 2 {
-                        Some((v[0].clone(), v[1].clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            Ok(ExecutionInput::Command(CommandInput {
-                working_directory: working_directory.clone().map(std::path::PathBuf::from),
-                env_vars: env_pairs,
-                dry_run: dry_run.unwrap_or(false),
-                timeout_seconds: *timeout_secs,
-            }))
-        }
-        ExecutionInputDto::Network {
-            method,
-            headers,
-            body,
-            no_redirect,
-            timeout_seconds,
-            response_body_limit,
-        } => {
-            let net_method = method
-                .as_ref()
-                .and_then(|m| match m.to_uppercase().as_str() {
-                    "GET" => Some(NetworkMethod::Get),
-                    "HEAD" => Some(NetworkMethod::Head),
-                    "POST" => Some(NetworkMethod::Post),
-                    "PUT" => Some(NetworkMethod::Put),
-                    "PATCH" => Some(NetworkMethod::Patch),
-                    "DELETE" => Some(NetworkMethod::Delete),
-                    _ => None,
-                });
-            let hdrs: Vec<(String, String)> = headers
-                .iter()
-                .filter_map(|v| {
-                    if v.len() == 2 {
-                        Some((v[0].clone(), v[1].clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            Ok(ExecutionInput::Network(NetworkInput {
-                method: net_method,
-                headers: hdrs,
-                body: body.clone().map(|s| s.into_bytes()),
-                no_redirect: no_redirect.unwrap_or(false),
-                timeout_seconds: *timeout_seconds,
-                response_body_limit: *response_body_limit,
-            }))
+    }
+}
+
+impl TryFrom<&ExecutionInputDto> for PreparedExecutionInput {
+    type Error = GatewayError;
+
+    fn try_from(dto: &ExecutionInputDto) -> Result<Self, Self::Error> {
+        match dto {
+            ExecutionInputDto::None => Ok(Self::None),
+            ExecutionInputDto::FilesystemWrite { data } => Ok(Self::FilesystemWrite(data.clone())),
+            ExecutionInputDto::Command {
+                working_directory,
+                env_vars,
+                dry_run,
+                timeout_secs,
+            } => {
+                if env_vars.iter().any(|pair| pair.len() != 2) {
+                    return Err(GatewayError::bad_request(
+                        "each env_vars entry must contain exactly two strings",
+                    ));
+                }
+                let env_pairs = env_vars
+                    .iter()
+                    .map(|pair| (pair[0].clone(), pair[1].clone()))
+                    .collect();
+                Ok(Self::Command(CommandInput {
+                    working_directory: working_directory.clone().map(std::path::PathBuf::from),
+                    env_vars: env_pairs,
+                    dry_run: dry_run.unwrap_or(false),
+                    timeout_seconds: *timeout_secs,
+                }))
+            }
+            ExecutionInputDto::Network {
+                method,
+                headers,
+                body,
+                no_redirect,
+                timeout_seconds,
+                response_body_limit,
+            } => {
+                let net_method = match method.as_deref() {
+                    None => None,
+                    Some(value) => Some(match value.to_ascii_uppercase().as_str() {
+                        "GET" => NetworkMethod::Get,
+                        "HEAD" => NetworkMethod::Head,
+                        "POST" => NetworkMethod::Post,
+                        "PUT" => NetworkMethod::Put,
+                        "PATCH" => NetworkMethod::Patch,
+                        "DELETE" => NetworkMethod::Delete,
+                        _ => return Err(GatewayError::bad_request("unsupported network method")),
+                    }),
+                };
+                if headers.iter().any(|pair| pair.len() != 2) {
+                    return Err(GatewayError::bad_request(
+                        "each headers entry must contain exactly two strings",
+                    ));
+                }
+                let hdrs = headers
+                    .iter()
+                    .map(|pair| (pair[0].clone(), pair[1].clone()))
+                    .collect();
+                Ok(Self::Network(NetworkInput {
+                    method: net_method,
+                    headers: hdrs,
+                    body: body.clone().map(|s| s.into_bytes()),
+                    no_redirect: no_redirect.unwrap_or(false),
+                    timeout_seconds: *timeout_seconds,
+                    response_body_limit: *response_body_limit,
+                }))
+            }
         }
     }
 }

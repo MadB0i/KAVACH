@@ -1,7 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
+use kavach_approval::ApprovalToken;
+use kavach_core::permit::ExecutionPermit;
 use kavach_runtime::runtime::KavachRuntime;
 
 use crate::auth::GatewayToken;
@@ -58,6 +61,108 @@ pub struct GatewayState {
     pub concurrency_semaphore: tokio::sync::Semaphore,
     /// Rate limiter for request throttling.
     pub rate_limiter: RateLimiter,
+    /// Server-owned issued permits. Clients may echo permit metadata, but
+    /// execution always uses the original server-side permit.
+    pub issued_permits: IssuedPermitRegistry,
+    /// Raw approval tokens retained only in process memory until an agent
+    /// exchanges an approved request for a permit.
+    pub approval_tokens: ApprovalTokenRegistry,
+    /// Monotonic gateway start time used for real uptime reporting.
+    pub started_at: Instant,
+}
+
+/// Maximum number of unconsumed gateway permits retained in memory.
+const MAX_ISSUED_PERMITS: usize = 10_000;
+
+/// Server-side registry for request-bound permits issued by `/evaluate`.
+pub struct IssuedPermitRegistry {
+    inner: Mutex<HashMap<Vec<u8>, ExecutionPermit>>,
+}
+
+impl IssuedPermitRegistry {
+    /// Create an empty permit registry.
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Register a newly issued permit, purging expired entries first.
+    pub fn register(&self, permit: ExecutionPermit) -> Result<(), &'static str> {
+        let mut permits = self.inner.lock().map_err(|_| "permit registry lock")?;
+        permits.retain(|_, existing| !existing.is_expired());
+        if permits.len() >= MAX_ISSUED_PERMITS {
+            return Err("permit registry capacity reached");
+        }
+        permits.insert(permit.permit_token_hash().to_vec(), permit);
+        Ok(())
+    }
+
+    /// Atomically take an issued permit for a single execution attempt.
+    pub fn take(&self, token_hash: &[u8]) -> Result<Option<ExecutionPermit>, &'static str> {
+        let mut permits = self.inner.lock().map_err(|_| "permit registry lock")?;
+        permits.retain(|_, existing| !existing.is_expired());
+        Ok(permits.remove(token_hash))
+    }
+}
+
+impl Default for IssuedPermitRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// In-memory registry for raw approval tokens. Tokens are never serialized,
+/// logged, or returned to the dashboard.
+pub struct ApprovalTokenRegistry {
+    inner: Mutex<HashMap<String, ApprovalToken>>,
+}
+
+impl ApprovalTokenRegistry {
+    /// Create an empty approval-token registry.
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Retain a token after a human approval decision.
+    pub fn insert(&self, approval_id: String, token: ApprovalToken) -> Result<(), &'static str> {
+        let mut tokens = self
+            .inner
+            .lock()
+            .map_err(|_| "approval token registry lock")?;
+        if tokens.len() >= MAX_ISSUED_PERMITS {
+            return Err("approval token registry capacity reached");
+        }
+        tokens.insert(approval_id, token);
+        Ok(())
+    }
+
+    /// Clone a token for a broker exchange without exposing its value.
+    pub fn get(&self, approval_id: &str) -> Result<Option<ApprovalToken>, &'static str> {
+        let tokens = self
+            .inner
+            .lock()
+            .map_err(|_| "approval token registry lock")?;
+        Ok(tokens.get(approval_id).cloned())
+    }
+
+    /// Remove a token after successful consumption.
+    pub fn remove(&self, approval_id: &str) -> Result<(), &'static str> {
+        let mut tokens = self
+            .inner
+            .lock()
+            .map_err(|_| "approval token registry lock")?;
+        tokens.remove(approval_id);
+        Ok(())
+    }
+}
+
+impl Default for ApprovalTokenRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Sliding-window rate limiter.

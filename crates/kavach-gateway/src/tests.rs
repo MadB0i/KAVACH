@@ -109,6 +109,9 @@ fn test_state() -> (Arc<GatewayState>, TempDir, String) {
             cfg.rate_limit_per_second,
             cfg.rate_limit_burst,
         ),
+        issued_permits: crate::state::IssuedPermitRegistry::new(),
+        approval_tokens: crate::state::ApprovalTokenRegistry::new(),
+        started_at: std::time::Instant::now(),
     });
     (state, dir, hex_str)
 }
@@ -128,16 +131,20 @@ fn test_api_router(state: Arc<GatewayState>) -> Router {
         .route("/requests/execute", post(crate::routes::execute::execute))
         .route("/approvals", get(crate::routes::approvals::list_approvals))
         .route(
-            "/approvals/{id}",
+            "/approvals/:id",
             get(crate::routes::approvals::get_approval),
         )
         .route(
-            "/approvals/{id}/approve",
+            "/approvals/:id/approve",
             post(crate::routes::approvals::approve_approval),
         )
         .route(
-            "/approvals/{id}/deny",
+            "/approvals/:id/deny",
             post(crate::routes::approvals::deny_approval),
+        )
+        .route(
+            "/approvals/:id/consume",
+            post(crate::routes::approvals::consume_approval),
         )
         .route("/audit/events", get(crate::routes::audit::list_events))
         .route("/audit/verify", post(crate::routes::audit::verify_chain))
@@ -477,7 +484,8 @@ async fn health_returns_200() {
     assert_eq!(res.status(), StatusCode::OK);
 
     let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
-    assert_eq!(body["status"], "ok");
+    assert_eq!(body["status"], "success");
+    assert_eq!(body["data"]["status"], "ok");
 }
 
 #[tokio::test]
@@ -498,9 +506,10 @@ async fn ready_returns_200_when_healthy() {
     assert_eq!(res.status(), StatusCode::OK);
 
     let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
-    assert_eq!(body["status"], "ok");
-    assert_eq!(body["audit_available"], true);
-    assert_eq!(body["approval_available"], true);
+    assert_eq!(body["status"], "success");
+    assert_eq!(body["data"]["ready"], true);
+    assert_eq!(body["data"]["audit_store"], "ready");
+    assert_eq!(body["data"]["approval_store"], "ready");
 }
 
 #[tokio::test]
@@ -540,8 +549,8 @@ async fn api_status_returns_200_with_auth() {
     assert_eq!(res.status(), StatusCode::OK);
 
     let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
-    assert_eq!(body["service"], "kavach-gateway");
-    assert!(body["version"].is_string());
+    assert_eq!(body["data"]["service"], "kavach-gateway");
+    assert!(body["data"]["version"].is_string());
 }
 
 // ── Auth Middleware Tests ────────────────────────────────────────────────
@@ -717,6 +726,8 @@ async fn get_nonexistent_approval_returns_404() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
+    assert_eq!(body["error"]["code"], "KAVACH_NOT_FOUND");
 }
 
 #[tokio::test]
@@ -737,6 +748,8 @@ async fn approve_nonexistent_approval_returns_404() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
+    assert_eq!(body["error"]["code"], "KAVACH_NOT_FOUND");
 }
 
 #[tokio::test]
@@ -757,6 +770,8 @@ async fn deny_nonexistent_approval_returns_404() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
+    assert_eq!(body["error"]["code"], "KAVACH_NOT_FOUND");
 }
 
 // ── Audit Route Tests ────────────────────────────────────────────────────
@@ -1041,6 +1056,9 @@ fn test_body_limit_state(limit: usize) -> (Arc<GatewayState>, TempDir, String) {
             cfg.rate_limit_per_second,
             cfg.rate_limit_burst,
         ),
+        issued_permits: crate::state::IssuedPermitRegistry::new(),
+        approval_tokens: crate::state::ApprovalTokenRegistry::new(),
+        started_at: std::time::Instant::now(),
     });
     (state, dir, hex_str)
 }
@@ -1185,6 +1203,49 @@ async fn invalid_reload_preserves_previous_policy() {
 }
 
 // ── Execute Endpoint Tests ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn execute_rejects_a_valid_but_unregistered_permit() {
+    let (state, _dir, token_hex) = test_state();
+    let request = make_file_read_request("exec-unregistered");
+    let outcome = {
+        let runtime = state.runtime.read().unwrap();
+        runtime.evaluate(&request).unwrap()
+    };
+    let permitted = match outcome {
+        kavach_runtime::outcome::RuntimeOutcome::Permitted(permitted) => permitted,
+        other => panic!("expected Permitted, got {other:?}"),
+    };
+    let body = serde_json::json!({
+        "request": request,
+        "permit": PermitDto::from(&permitted.permit),
+        "permit_secret_hex": hex::encode(permitted.secret()),
+        "input": "none",
+    });
+    let app = test_api_router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/requests/execute")
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
+    assert_eq!(body["error"]["code"], "KAVACH_INVALID_REQUEST");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not issued by this gateway")
+    );
+}
 
 #[tokio::test]
 async fn execute_with_consumed_permit_detected() {

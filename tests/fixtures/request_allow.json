@@ -1,0 +1,31 @@
+{
+  "request_id": "read-project-source",
+  "subject": {
+    "agent_id": "example-agent",
+    "session_id": "example-session",
+    "display_name": "README example",
+    "trust_level": "standard",
+    "declared_capabilities": []
+  },
+  "operation": {
+    "file_read": {
+      "max_bytes": 4096
+    }
+  },
+  "resource": {
+    "File": {
+      "path": "src/lib.rs"
+    }
+  },
+  "context": {
+    "timestamp": {
+      "secs_since_epoch": 0,
+      "nanos_since_epoch": 0
+    },
+    "working_directory": null,
+    "declared_intent": "Read project source for review",
+    "parent_request_id": null,
+    "metadata": {},
+    "dry_run": false
+  }
+}

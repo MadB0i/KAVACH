@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use kavach_audit::AuditEventCategory;
 use kavach_audit::AuditStore;
@@ -12,9 +12,9 @@ use crate::error::ApprovalError;
 use crate::store::SqliteApprovalStore;
 use crate::token::ApprovalToken;
 use crate::types::{
-    ApprovalActor, ApprovalRecord, ApprovalRequest, ApprovalState, ApprovalStoreConfig,
-    ConsumedApproval, DEFAULT_APPROVAL_TTL_SECONDS, MAX_APPROVAL_SUMMARY_LENGTH,
-    MAX_APPROVAL_TTL_SECONDS, MAX_PENDING_APPROVALS, PendingApproval,
+    ApprovalActor, ApprovalRecord, ApprovalRequest, ApprovalRow, ApprovalState,
+    ApprovalStoreConfig, ConsumedApproval, DEFAULT_APPROVAL_TTL_SECONDS,
+    MAX_APPROVAL_SUMMARY_LENGTH, MAX_APPROVAL_TTL_SECONDS, MAX_PENDING_APPROVALS, PendingApproval,
 };
 
 const DEFAULT_PAGE_SIZE: u64 = 100;
@@ -80,6 +80,7 @@ pub struct SqliteApprovalBroker<S> {
     store: S,
     audit_store: AuditStore,
     clock: Box<dyn Clock>,
+    transition_lock: Mutex<()>,
 }
 
 impl SqliteApprovalBroker<SqliteApprovalStore> {
@@ -89,6 +90,7 @@ impl SqliteApprovalBroker<SqliteApprovalStore> {
             store,
             audit_store,
             clock,
+            transition_lock: Mutex::new(()),
         }
     }
 
@@ -143,6 +145,45 @@ impl SqliteApprovalBroker<SqliteApprovalStore> {
             .append(input)
             .map_err(|e| ApprovalError::audit_failure(e.to_string()))?;
         Ok(summary.sequence)
+    }
+
+    fn ensure_transitionable(
+        &self,
+        approval_id: &ApprovalId,
+        expected_state: &str,
+        target_state: &str,
+    ) -> Result<ApprovalRow, ApprovalError> {
+        let row = self
+            .store
+            .load(approval_id.as_str())?
+            .ok_or_else(ApprovalError::not_found)?;
+        if row.state != expected_state {
+            return Err(ApprovalError::invalid_transition(&row.state, target_state));
+        }
+
+        let expires_at = row
+            .expires_at
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .map_err(|e| ApprovalError::database_corruption(e.to_string()))?;
+        let now = self.clock.now();
+        if now >= expires_at {
+            let mut metadata = BTreeMap::new();
+            metadata.insert("approval_id".into(), approval_id.to_string());
+            let seq = self.append_audit_event(
+                AuditEventCategory::ApprovalExpired,
+                None,
+                None,
+                None,
+                None,
+                Some("expired"),
+                None,
+                &[],
+                metadata,
+            )?;
+            self.store.expire_overdue(&now.to_rfc3339(), seq)?;
+            return Err(ApprovalError::invalid_transition("expired", target_state));
+        }
+        Ok(row)
     }
 }
 
@@ -229,6 +270,13 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
         approval_id: &ApprovalId,
         actor: &ApprovalActor,
     ) -> Result<ApprovalToken, ApprovalError> {
+        let _transition = self
+            .transition_lock
+            .lock()
+            .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
+        let row = self.ensure_transitionable(approval_id, "pending", "approved")?;
+        let matched_rule_ids = split_rule_ids(&row.matched_rule_ids);
+
         let token = ApprovalToken::generate()?;
         let token_hash = token.hash();
         let decision_at = self.clock.now().to_rfc3339();
@@ -238,13 +286,13 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
         metadata.insert("actor".into(), actor.to_string());
         let seq = self.append_audit_event(
             AuditEventCategory::ApprovalApproved,
-            None,
-            None,
-            None,
-            None,
+            Some(&row.request_id),
+            Some(&row.operation),
+            Some(&row.resource_kind),
+            Some(&row.summary),
             Some("approved"),
             None,
-            &[],
+            &matched_rule_ids,
             metadata,
         )?;
 
@@ -266,6 +314,13 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
         actor: &ApprovalActor,
         reason: Option<&str>,
     ) -> Result<(), ApprovalError> {
+        let _transition = self
+            .transition_lock
+            .lock()
+            .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
+        let row = self.ensure_transitionable(approval_id, "pending", "denied")?;
+        let matched_rule_ids = split_rule_ids(&row.matched_rule_ids);
+
         let decision_at = self.clock.now().to_rfc3339();
 
         let mut metadata = BTreeMap::new();
@@ -276,13 +331,13 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
         }
         let seq = self.append_audit_event(
             AuditEventCategory::ApprovalDenied,
-            None,
-            None,
-            None,
-            None,
+            Some(&row.request_id),
+            Some(&row.operation),
+            Some(&row.resource_kind),
+            Some(&row.summary),
             Some("denied"),
             reason,
-            &[],
+            &matched_rule_ids,
             metadata,
         )?;
 
@@ -296,19 +351,26 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
     }
 
     fn cancel(&self, approval_id: &ApprovalId) -> Result<(), ApprovalError> {
+        let _transition = self
+            .transition_lock
+            .lock()
+            .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
+        let row = self.ensure_transitionable(approval_id, "pending", "cancelled")?;
+        let matched_rule_ids = split_rule_ids(&row.matched_rule_ids);
+
         let decision_at = self.clock.now().to_rfc3339();
 
         let mut metadata = BTreeMap::new();
         metadata.insert("approval_id".into(), approval_id.to_string());
         let seq = self.append_audit_event(
             AuditEventCategory::DecisionDeny,
-            None,
-            None,
-            None,
-            None,
+            Some(&row.request_id),
+            Some(&row.operation),
+            Some(&row.resource_kind),
+            Some(&row.summary),
             Some("cancelled"),
             Some("cancelled"),
-            &[],
+            &matched_rule_ids,
             metadata,
         )?;
 
@@ -321,14 +383,12 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
         approval_id: &ApprovalId,
         token: &ApprovalToken,
     ) -> Result<ConsumedApproval, ApprovalError> {
-        let row = self
-            .store
-            .load(approval_id.as_str())?
-            .ok_or_else(ApprovalError::not_found)?;
-
-        if row.state != "approved" {
-            return Err(ApprovalError::invalid_transition(&row.state, "consumed"));
-        }
+        let _transition = self
+            .transition_lock
+            .lock()
+            .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
+        let row = self.ensure_transitionable(approval_id, "approved", "consumed")?;
+        let matched_rule_ids = split_rule_ids(&row.matched_rule_ids);
 
         let stored_hash_hex = row
             .token_hash
@@ -347,14 +407,14 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
         let mut metadata = BTreeMap::new();
         metadata.insert("approval_id".into(), approval_id.to_string());
         let seq = self.append_audit_event(
-            AuditEventCategory::ExecutionStarted,
-            None,
-            None,
-            None,
-            None,
+            AuditEventCategory::ApprovalConsumed,
+            Some(&row.request_id),
+            Some(&row.operation),
+            Some(&row.resource_kind),
+            Some(&row.summary),
             Some("consumed"),
             None,
-            &[],
+            &matched_rule_ids,
             metadata,
         )?;
 
@@ -389,7 +449,14 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
     }
 
     fn expire_overdue(&self) -> Result<Vec<String>, ApprovalError> {
+        let _transition = self
+            .transition_lock
+            .lock()
+            .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
         let now = self.clock.now().to_rfc3339();
+        if !self.store.has_overdue(&now)? {
+            return Ok(Vec::new());
+        }
         let metadata = BTreeMap::new();
         let seq = self.append_audit_event(
             AuditEventCategory::ApprovalExpired,
@@ -421,6 +488,14 @@ impl ApprovalBroker for SqliteApprovalBroker<SqliteApprovalStore> {
             .load(approval_id.as_str())?
             .ok_or_else(ApprovalError::not_found)?;
         Ok(crate::store::row_to_record(row))
+    }
+}
+
+fn split_rule_ids(value: &str) -> Vec<String> {
+    if value.is_empty() {
+        Vec::new()
+    } else {
+        value.split(',').map(|id| id.trim().to_string()).collect()
     }
 }
 

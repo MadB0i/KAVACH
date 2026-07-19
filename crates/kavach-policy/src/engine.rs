@@ -24,8 +24,23 @@ struct CompiledRule {
 /// A policy whose rules have been validated and whose path globs are compiled.
 #[derive(Debug, Clone)]
 struct CompiledPolicy {
+    id: String,
+    name: String,
     default_effect: DefaultEffect,
     rules: Vec<CompiledRule>,
+}
+
+/// Read-only policy metadata suitable for status and management APIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicySummary {
+    /// Stable policy identifier.
+    pub id: String,
+    /// Human-readable policy name.
+    pub name: String,
+    /// Fail-closed default effect.
+    pub default_effect: DefaultEffect,
+    /// Number of rules in the policy.
+    pub rule_count: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -88,11 +103,26 @@ impl PolicyEngine {
                 });
             }
             compiled.push(CompiledPolicy {
+                id: policy.id.to_string(),
+                name: policy.name.clone(),
                 default_effect: policy.default_effect,
                 rules,
             });
         }
         Ok(Self { compiled })
+    }
+
+    /// Return metadata for the currently loaded policy snapshot.
+    pub fn summaries(&self) -> Vec<PolicySummary> {
+        self.compiled
+            .iter()
+            .map(|policy| PolicySummary {
+                id: policy.id.clone(),
+                name: policy.name.clone(),
+                default_effect: policy.default_effect,
+                rule_count: policy.rules.len(),
+            })
+            .collect()
     }
 
     /// Evaluate a [`ToolRequest`] against all loaded policies.

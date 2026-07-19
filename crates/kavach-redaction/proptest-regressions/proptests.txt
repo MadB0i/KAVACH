@@ -8,3 +8,4 @@ cc fc589e5ff7adcda2e52e5574a2b3a8b1a19c035132f6a1ae41fae3734190aba3 # shrinks to
 cc 0c20d16a9ce4d88574eb6eff5542f9394d9064cbd2d783dc24955893ddfb72b7 # shrinks to haystack = "aBearer aa_0aa__"
 cc 78c1671ba44f7a1bb61fed64c6cb7d6e156dd010ed36512000e208ebc028c45d # shrinks to prefix = "A", token = "A0A-0aAAA0", suffix = ""
 cc ec29f9106e11fcdeda2f2874eeed508aa1417cdffa9821ecc24afe82a94ae61b # shrinks to prefix = "", token = "-a_Aaa0A0a", suffix = "º"
+cc d0afef9f10c0f9656ab3dda10de5960e2caca5c92a7f29b5176bb150ee02df72 # shrinks to prefix = "", token = "a-aa-_0---", suffix = ""

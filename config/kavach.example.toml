@@ -27,6 +27,8 @@ verify_on_startup = true
 rotation_max_events = 100000
 
 [approval]
+# SQLite state for restart-safe approvals
+database = "./data/kavach-approvals.db"
 # Default time-to-live for approval requests (seconds)
 default_ttl_seconds = 300
 max_pending = 1000

@@ -47,6 +47,13 @@ impl AuditStoreBuilder {
 
     /// Opens (or creates) the database at the given path.
     pub fn open(self, path: &str) -> Result<AuditStore, AuditError> {
+        if let Some(parent) = std::path::Path::new(path)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| AuditError::database_open(e.to_string()))?;
+        }
         let mut conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
@@ -57,7 +64,7 @@ impl AuditStoreBuilder {
         run_migrations(&conn)?;
 
         Ok(AuditStore {
-            conn: std::sync::Mutex::new(conn),
+            conn: Arc::new(std::sync::Mutex::new(conn)),
             redactor: self.redactor,
         })
     }
@@ -71,7 +78,7 @@ impl AuditStoreBuilder {
         run_migrations(&conn)?;
 
         Ok(AuditStore {
-            conn: std::sync::Mutex::new(conn),
+            conn: Arc::new(std::sync::Mutex::new(conn)),
             redactor: self.redactor,
         })
     }
@@ -136,8 +143,9 @@ fn run_migrations(conn: &Connection) -> Result<(), AuditError> {
 }
 
 /// Append-only, tamper-evident audit event store backed by SQLite.
+#[derive(Clone)]
 pub struct AuditStore {
-    conn: std::sync::Mutex<Connection>,
+    conn: Arc<std::sync::Mutex<Connection>>,
     redactor: Option<Arc<dyn Redactor>>,
 }
 
@@ -321,6 +329,34 @@ impl AuditStore {
 
         let rows = stmt
             .query_map(params![after, limit], row_to_event)
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Returns events before the given sequence in newest-first order.
+    pub fn events_before_sequence(
+        &self,
+        before: u64,
+        limit: u64,
+    ) -> Result<Vec<AuditEventRecord>, AuditError> {
+        let limit = limit.min(MAX_EVENT_QUERY_COUNT);
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT sequence, event_id, timestamp, category, request_id, agent_id, \
+                 operation, resource_kind, resource_summary, decision, reason_code, \
+                 matched_rule_ids, metadata, previous_hash, current_hash \
+                 FROM audit_events WHERE sequence < ?1 ORDER BY sequence DESC LIMIT ?2",
+            )
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![before, limit], row_to_event)
             .map_err(|e| AuditError::transaction_failure(e.to_string()))?
             .filter_map(|r| r.ok())
             .collect();
@@ -584,6 +620,7 @@ fn parse_category(s: &str) -> Option<AuditEventCategory> {
         "ApprovalApproved" => Some(AuditEventCategory::ApprovalApproved),
         "ApprovalDenied" => Some(AuditEventCategory::ApprovalDenied),
         "ApprovalExpired" => Some(AuditEventCategory::ApprovalExpired),
+        "ApprovalConsumed" => Some(AuditEventCategory::ApprovalConsumed),
         "ExecutionStarted" => Some(AuditEventCategory::ExecutionStarted),
         "ExecutionSucceeded" => Some(AuditEventCategory::ExecutionSucceeded),
         "ExecutionFailed" => Some(AuditEventCategory::ExecutionFailed),
