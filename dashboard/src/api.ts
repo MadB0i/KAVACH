@@ -59,11 +59,21 @@ export async function fetchApi<T>(path: string, options: RequestInit = {}): Prom
   if (!text) {
     return undefined as T;
   }
-  const json = JSON.parse(text) as ApiResponse<T>;
-  if (json.status === 'error' && json.error) {
-    throw new ApiError(json.error.code, json.error.message, json.request_id);
+  const json = JSON.parse(text) as ApiResponse<T> | T;
+  if (
+    typeof json === 'object'
+    && json !== null
+    && 'status' in json
+    && ((json as ApiResponse<T>).status === 'success' || (json as ApiResponse<T>).status === 'error')
+    && ('data' in json || 'error' in json)
+  ) {
+    const envelope = json as ApiResponse<T>;
+    if (envelope.status === 'error' && envelope.error) {
+      throw new ApiError(envelope.error.code, envelope.error.message, envelope.request_id);
+    }
+    return envelope.data as T;
   }
-  return json.data as T;
+  return json as T;
 }
 
 export function getHealth(): Promise<HealthStatus> {

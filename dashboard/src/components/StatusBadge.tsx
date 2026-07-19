@@ -1,5 +1,7 @@
+import type { StatusVariant } from '../utils/presentation';
+
 interface StatusBadgeProps {
-  variant: 'success' | 'warning' | 'error' | 'info' | 'pending';
+  variant: StatusVariant;
   label: string;
   dot?: boolean;
 }

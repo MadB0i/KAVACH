@@ -38,7 +38,7 @@ describe('PendingApprovals', () => {
     vi.mocked(api.getApprovals).mockResolvedValue([]);
     renderWithProviders(<PendingApprovals />);
     await waitFor(() => {
-      expect(screen.getByText('No Pending Approvals')).toBeInTheDocument();
+      expect(screen.getByText('Approval queue clear')).toBeInTheDocument();
     });
   });
 
@@ -62,9 +62,9 @@ describe('PendingApprovals', () => {
     const tableApproveBtn = approveButtons[0]!;
     fireEvent.click(tableApproveBtn);
     await waitFor(() => {
-      expect(screen.getByText(/Are you sure/i)).toBeInTheDocument();
+      expect(screen.getByText(/mark this approval as granted/i)).toBeInTheDocument();
     });
-    const dialogApproveBtn = screen.getByRole('button', { name: 'Approve' });
+    const dialogApproveBtn = screen.getByRole('button', { name: 'Approve request' });
     fireEvent.click(dialogApproveBtn);
     await waitFor(() => {
       expect(api.approveApproval).toHaveBeenCalled();
@@ -81,8 +81,8 @@ describe('PendingApprovals', () => {
     const denyButtons = screen.getAllByText('Deny');
     fireEvent.click(denyButtons[0]!);
     await waitFor(() => {
-      expect(screen.getByText(/Are you sure/i)).toBeInTheDocument();
-      const denyBtn = screen.getByRole('button', { name: 'Deny' });
+      expect(screen.getByText(/pending request will be rejected/i)).toBeInTheDocument();
+      const denyBtn = screen.getByRole('button', { name: 'Deny request' });
       expect(denyBtn).toBeInTheDocument();
     });
   });

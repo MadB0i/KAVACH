@@ -6,6 +6,7 @@ import StatusBadge from '../components/StatusBadge';
 import EmptyState from '../components/EmptyState';
 import LoadingState from '../components/LoadingState';
 import ErrorState from '../components/ErrorState';
+import { ShieldAlert, ShieldCheck } from 'lucide-react';
 
 export default function SecurityWarnings() {
   const [warnings, setWarnings] = useState<AuditEvent[]>([]);
@@ -36,10 +37,10 @@ export default function SecurityWarnings() {
 
   return (
     <div className="page">
-      <PageHeader title="Security Warnings" subtitle={`${warnings.length} warning${warnings.length !== 1 ? 's' : ''}`} />
+      <PageHeader title="Security Warnings" icon={ShieldAlert} eyebrow="Threat signals" subtitle={`${warnings.length} warning${warnings.length !== 1 ? 's' : ''}`} />
 
       {warnings.length === 0 ? (
-        <EmptyState icon={'\u2713'} title="No Security Warnings" description="All clear. No security warnings recorded." />
+        <EmptyState icon={ShieldCheck} title="No security warnings" description="The loaded audit data contains no SecurityWarning events." />
       ) : (
         <div className="warning-list">
           {warnings.map((w) => (
@@ -47,11 +48,11 @@ export default function SecurityWarnings() {
               <div className="warning-card__header">
                 <StatusBadge variant="error" label="Security Warning" />
                 <span className="warning-card__time">
-                  {w.timestamp ? new Date(w.timestamp).toLocaleString() : '?'}
+                  {w.timestamp ? new Date(w.timestamp).toLocaleString() : 'Time unavailable'}
                 </span>
               </div>
               <div className="warning-card__body">
-                <p><strong>Request</strong> <code>{w.request_id || '\u2014'}</code></p>
+                <p><strong>Request</strong> <code>{w.request_id || 'Not correlated'}</code></p>
                 {w.operation && <p><strong>Operation</strong> {w.operation}</p>}
                 {w.summary && <p><strong>Details</strong> {w.summary}</p>}
                 {w.agent_id && <p><strong>Agent</strong> {w.agent_id}</p>}
