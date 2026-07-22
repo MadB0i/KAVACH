@@ -1,7 +1,7 @@
 #![no_main]
 
+use kavach_core::resource::{NetworkHost, NetworkResource, NetworkScheme};
 use libfuzzer_sys::fuzz_target;
-use kavach_core::resource::{NetworkHost, NetworkScheme, NetworkResource};
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {

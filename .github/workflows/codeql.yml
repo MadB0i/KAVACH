@@ -34,13 +34,27 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize CodeQL
+      - name: Install Rust source component
+        if: matrix.language == 'rust'
+        run: rustup component add rust-src
+
+      - name: Initialize CodeQL for Rust
+        if: matrix.language == 'rust'
         uses: github/codeql-action/init@v3
         with:
-          languages: ${{ matrix.language }}
+          languages: rust
+          build-mode: none
+          queries: security-and-quality
+
+      - name: Initialize CodeQL for JavaScript and TypeScript
+        if: matrix.language == 'javascript-typescript'
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
           queries: security-and-quality
 
       - name: Autobuild
+        if: matrix.language != 'rust'
         uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL analysis
