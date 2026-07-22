@@ -1,6 +1,7 @@
 import { ApiError, type ApiResponse, type HealthStatus, type ReadyStatus, type StatusInfo, type ApprovalRecord, type AuditEvent, type AuditVerifyResult, type PolicyInfo } from './types';
 
 let authToken: string | null = null;
+export const AUTH_INVALIDATED_EVENT = 'kavach:auth-invalidated';
 
 export function setAuthToken(token: string | null): void {
   authToken = token;
@@ -41,6 +42,9 @@ export async function fetchApi<T>(path: string, options: RequestInit = {}): Prom
   if (!response.ok) {
     if (response.status === 401) {
       clearAuthToken();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event(AUTH_INVALIDATED_EVENT));
+      }
       throw new ApiError('UNAUTHORIZED', 'Authentication failed. Please log in again.');
     }
     let errorData: ApiResponse<never>;
@@ -96,17 +100,17 @@ export function getApproval(id: string): Promise<ApprovalRecord> {
   return fetchApi<ApprovalRecord>(`/api/approvals/${encodeURIComponent(id)}`);
 }
 
-export function approveApproval(id: string, actor: string): Promise<{ success: boolean }> {
-  return fetchApi<{ success: boolean }>(`/api/approvals/${encodeURIComponent(id)}/approve`, {
+export function approveApproval(id: string, actor: string): Promise<{ approval_id: string; outcome: 'approved' }> {
+  return fetchApi<{ approval_id: string; outcome: 'approved' }>(`/api/approvals/${encodeURIComponent(id)}/approve`, {
     method: 'POST',
     body: JSON.stringify({ actor }),
   });
 }
 
-export function denyApproval(id: string, actor: string, reason?: string): Promise<{ success: boolean }> {
+export function denyApproval(id: string, actor: string, reason?: string): Promise<{ approval_id: string; outcome: 'denied' }> {
   const body: Record<string, string> = { actor };
   if (reason) body.reason = reason;
-  return fetchApi<{ success: boolean }>(`/api/approvals/${encodeURIComponent(id)}/deny`, {
+  return fetchApi<{ approval_id: string; outcome: 'denied' }>(`/api/approvals/${encodeURIComponent(id)}/deny`, {
     method: 'POST',
     body: JSON.stringify(body),
   });

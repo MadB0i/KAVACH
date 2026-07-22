@@ -41,13 +41,21 @@ pub fn verify(path: &str, mode: OutputMode) -> Result<(), CliError> {
         })
         .collect();
 
-    let chain_status = store.chain_status().ok().map(|cs| {
-        serde_json::json!({
-            "event_count": cs.event_count,
-            "latest_sequence": cs.latest_sequence,
-            "genesis_hash": cs.genesis_hash,
+    let chain_status = store
+        .chain_status()
+        .map_err(|e| {
+            CliError::new(
+                ExitCode::AuditError,
+                format!("failed to read audit chain status: {e}"),
+            )
         })
-    });
+        .map(|cs| {
+            serde_json::json!({
+                "event_count": cs.event_count,
+                "latest_sequence": cs.latest_sequence,
+                "genesis_hash": cs.genesis_hash,
+            })
+        })?;
 
     let output = CliOutput::with_data(serde_json::json!({
         "chain_valid": report.chain_valid,

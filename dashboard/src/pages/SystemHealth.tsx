@@ -85,9 +85,20 @@ export default function SystemHealth() {
     const ready = readyProbe.data;
     return [
       { name: 'Gateway API', icon: Server, state: healthStateFrom(health?.status), source: '/health', latency: healthProbe.latency, note: 'Ingress and authentication boundary' },
-      { name: 'Policy engine', icon: ShieldCheck, state: healthStateFrom(ready?.policy_loaded ?? health?.policy_engine), source: '/ready', latency: readyProbe.latency, note: 'Default-deny decision engine' },
-      { name: 'Audit store', icon: FileCheck2, state: healthStateFrom(ready?.audit_available ?? health?.audit_store), source: '/ready', latency: readyProbe.latency, note: 'Hash-linked event ledger' },
-      { name: 'Approval store', icon: Database, state: healthStateFrom(ready?.approval_available ?? health?.approval_store), source: '/ready', latency: readyProbe.latency, note: 'Human authorization state' },
+      {
+        name: 'Policy engine',
+        icon: ShieldCheck,
+        state: typeof ready?.policy_count === 'number'
+          ? (ready.policy_count > 0 ? 'healthy' : 'warning')
+          : healthStateFrom(ready?.policy_loaded ?? health?.policy_engine),
+        source: '/ready',
+        latency: readyProbe.latency,
+        note: typeof ready?.policy_count === 'number'
+          ? `${ready.policy_count} active ${ready.policy_count === 1 ? 'policy' : 'policies'}`
+          : 'Default-deny decision engine',
+      },
+      { name: 'Audit store', icon: FileCheck2, state: healthStateFrom(ready?.audit_store ?? ready?.audit_available ?? health?.audit_store), source: '/ready', latency: readyProbe.latency, note: 'Hash-linked event ledger' },
+      { name: 'Approval store', icon: Database, state: healthStateFrom(ready?.approval_store ?? ready?.approval_available ?? health?.approval_store), source: '/ready', latency: readyProbe.latency, note: 'Human authorization state' },
       { name: 'Filesystem adapter', icon: HardDrive, state: healthStateFrom(ready?.adapter_filesystem ?? ready?.adapters?.filesystem), source: '/ready', latency: readyProbe.latency, note: 'Workspace containment' },
       { name: 'Command adapter', icon: TerminalSquare, state: healthStateFrom(ready?.adapter_command ?? ready?.adapters?.command), source: '/ready', latency: readyProbe.latency, note: 'Executable enforcement' },
       { name: 'Network adapter', icon: Network, state: healthStateFrom(ready?.adapter_network ?? ready?.adapters?.network), source: '/ready', latency: readyProbe.latency, note: 'SSRF and redirect controls' },

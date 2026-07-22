@@ -23,6 +23,10 @@ export default function Login() {
       setError('Enter the gateway authentication token.');
       return;
     }
+    if (!/^[0-9a-fA-F]{64}$/.test(token)) {
+      setError('The gateway token must be exactly 64 hexadecimal characters.');
+      return;
+    }
     setLoading(true);
     try {
       await login(token);
@@ -96,6 +100,9 @@ export default function Login() {
                   placeholder="Enter authentication token"
                   autoFocus
                   autoComplete="off"
+                  minLength={64}
+                  maxLength={64}
+                  pattern="[0-9a-fA-F]{64}"
                   spellCheck={false}
                   aria-describedby={`token-security-note${error ? ' login-error' : ''}`}
                 />

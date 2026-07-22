@@ -14,7 +14,17 @@ effect = "allow"
 [rules.conditions]
 operations = ["file_read"]
 resource_kinds = ["file"]
-path_globs = ["./**"]
+path_globs = ["**"]
+
+[[rules]]
+id = "deny-sensitive-files"
+description = "Block common credential and private-key files even when project reads are allowed"
+effect = "deny"
+
+[rules.conditions]
+operations = ["file_read", "file_write", "file_delete"]
+resource_kinds = ["file"]
+path_globs = [".env", ".env.*", "**/.env", "**/.env.*", "**/id_rsa", "**/.ssh/**", "**/credentials**"]
 
 [[rules]]
 id = "allow-safe-commands"

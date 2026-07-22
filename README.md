@@ -59,11 +59,29 @@ cargo run -p kavach-cli -- policy check \
     --policy config/policy.example.toml \
     --request tests/fixtures/request_allow.json
 
-# Start the HTTP gateway
-cargo run -p kavach-cli -- serve --config config/kavach.example.toml
+# Build the dashboard served by the gateway
+npm --prefix dashboard ci
+npm --prefix dashboard run build
+
+# Start the HTTP gateway after supplying a private 32-byte token.
+# The gateway rejects missing/malformed tokens and never prints it.
+KAVACH_GATEWAY_TOKEN="$(openssl rand -hex 32)" \
+  cargo run -p kavach-cli -- serve --config config/kavach.example.toml
 
 # Run the end-to-end demo
-powershell -File scripts/demo.ps1
+powershell -ExecutionPolicy Bypass -File scripts/demo.ps1
+```
+
+Open `http://127.0.0.1:7421/dashboard/` and enter the same token. The dashboard
+keeps it in memory only; refreshing the page requires authentication again.
+On PowerShell, use `npm.cmd` for the dashboard commands if script shims are
+blocked, and generate the gateway token without printing it:
+
+```powershell
+$bytes = [byte[]]::new(32)
+[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+$env:KAVACH_GATEWAY_TOKEN = [Convert]::ToHexString($bytes).ToLowerInvariant()
+cargo run -p kavach-cli -- serve --config config/kavach.example.toml
 ```
 
 ## CLI exit codes
@@ -93,9 +111,9 @@ powershell -File scripts/demo.ps1
 
 | Platform | Status |
 |----------|--------|
-| Linux (x86_64) | Tier 1 — CI-tested, release artifacts |
-| macOS (x86_64) | Tier 1 — CI-tested, release artifacts |
-| Windows (x86_64) | Tier 1 — CI-tested, release artifacts |
+| Linux (x86_64) | CI workflow configured; not run in this local audit |
+| macOS (x86_64) | CI workflow configured; not run in this local audit |
+| Windows (x86_64) | Full local release matrix verified |
 
 **Minimum Rust version**: 1.85 (edition 2024).
 
@@ -106,6 +124,8 @@ powershell -File scripts/demo.ps1
 - **No sandboxing**: Enforcement operates at the OS API level, not via containers or seccomp.
 - **Performance**: Not tested at hyperscale. Benchmarks available in each crate's `benches/` directory.
 - **Fuzz targets**: Require nightly Rust. Run separately via `cd fuzz && cargo fuzz run <target>`.
+- **Gateway restart boundary**: Pending approval records and audit events persist, but raw approved tokens and issued permits are process-memory only and do not survive restart.
+- **Dashboard sessions**: The bearer token is not persisted in browser storage. Refreshing or reopening the dashboard requires re-entry.
 
 ## License
 

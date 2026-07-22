@@ -41,6 +41,9 @@ export interface ReadyStatus {
   audit_available?: boolean;
   approval_available?: boolean;
   policy_loaded?: boolean;
+  audit_store?: string;
+  approval_store?: string;
+  policy_count?: number;
   [key: string]: unknown;
 }
 

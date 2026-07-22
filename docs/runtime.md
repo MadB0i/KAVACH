@@ -104,7 +104,7 @@ The production runtime.  Fields:
 |-------|------|---------|---------|
 | `permit_ttl` | `Duration` | 300s | Lifetime of an issued ExecutionPermit |
 | `audit_fail_closed` | `bool` | true | Whether audit failures reject the request |
-| `redaction_enabled` | `bool` | false | Whether to redact summaries and outputs |
+| `redaction_enabled` | `bool` | true | Whether to redact summaries and outputs |
 | `max_sanitized_summary_length` | `usize` | 4096 | Max chars in sanitized log summaries |
 | `dry_run` | `bool` | false | If true, evaluate but never execute |
 
@@ -184,26 +184,13 @@ RuntimeBuilder::new()
 - `MissingAdapter(String)` — no adapter for operation
 - `UnsupportedOperation` — operation not supported by adapter
 - `FilesystemFailure(String)`, `CommandFailure(String)`, `NetworkFailure(String)` — adapter errors
-- `InvalidExecutionInput(&str)` — wrong input type for adapter
+- `InvalidExecutionInput(String)` — wrong input type for adapter
 - `DryRunExecutionRejected` — execution blocked in dry-run mode
 - `ConfigurationFailure(String)` — invalid config
 - `InternalConsistencyFailure(String)` — RNG / invariant failure
 
-## Test Coverage (43 runtime tests)
-
-| Category | Tests |
-|----------|-------|
-| Core evaluation (allow/deny/approval) | 7 |
-| Permit binding + digest | 2 |
-| Permit replay + reuse | 2 |
-| Approval lifecycle | 6 |
-| Concurrency | 2 |
-| Configuration edge cases | 5 |
-| Multi-policy precedence | 3 |
-| Permit scope enforcement | 1 |
-| Execution flow | 5 |
-| ExecutionInput dispatch | 2 |
-| Builder edge cases | 2 |
-| Redaction integration | 1 |
-| Audit configuration | 1 |
-| **Total** | **43** |
+The runtime test suite covers direct allow/deny/approval decisions, policy
+precedence, request binding, replay, approval exchange, concurrent consumers,
+adapter dispatch, real filesystem execution, redaction failures, audit
+fail-closed behavior, and builder/configuration boundaries. Use the current
+test runner output for counts; this document does not freeze a stale total.

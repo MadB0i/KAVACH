@@ -466,7 +466,7 @@ mod tests {
             "INSERT INTO audit_events (sequence, event_id, timestamp, category, \
              matched_rule_ids, metadata, previous_hash, current_hash) \
              VALUES (3, 'gap-id', '2026-01-01T00:00:00Z', 'RequestReceived', \
-             '[]', '{}', x'00', x'00')",
+             '[]', '{}', zeroblob(32), zeroblob(32))",
             [],
         )
         .unwrap();

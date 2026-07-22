@@ -12,7 +12,9 @@ struct ApprovalContext {
     broker: Arc<dyn kavach_approval::ApprovalBroker>,
 }
 
-fn resolve_db_paths(config_path: Option<&str>) -> Result<(String, String), CliError> {
+fn resolve_db_paths(
+    config_path: Option<&str>,
+) -> Result<(String, String, ApprovalStoreConfig), CliError> {
     if let Some(cfg_path) = config_path {
         let cfg = kavach_config::load_config(cfg_path).map_err(|e| {
             let msg = match &e {
@@ -26,30 +28,31 @@ fn resolve_db_paths(config_path: Option<&str>) -> Result<(String, String), CliEr
             CliError::new(ExitCode::InvalidInput, msg)
         })?;
         let audit_db = cfg.audit.database.to_string_lossy().to_string();
-        let approval_db = {
-            let dir = Path::new(&audit_db).parent().unwrap_or(Path::new("./data"));
-            dir.join("approvals.db").to_string_lossy().to_string()
+        let approval_db = cfg.approval.database.to_string_lossy().to_string();
+        let approval_config = ApprovalStoreConfig {
+            default_ttl_seconds: cfg.approval.default_ttl_seconds,
+            max_pending: cfg.approval.max_pending,
         };
-        Ok((audit_db, approval_db))
+        Ok((audit_db, approval_db, approval_config))
     } else {
         let default_audit = "./data/kavach-audit.db".to_string();
         let default_approval = "./data/approvals.db".to_string();
 
-        let (audit_db, approval_db) = if Path::new(&default_audit).is_file() {
-            (default_audit, default_approval)
+        if Path::new(&default_audit).is_file() {
+            let approval_config = ApprovalStoreConfig::default();
+            Ok((default_audit, default_approval, approval_config))
         } else {
-            return Err(CliError::new(
+            Err(CliError::new(
                 ExitCode::InvalidInput,
                 "no config file provided and no default audit database found at ./data/kavach-audit.db. \
                  Use --config to specify a config file.",
-            ));
-        };
-        Ok((audit_db, approval_db))
+            ))
+        }
     }
 }
 
 fn open_context(config_path: Option<&str>) -> Result<ApprovalContext, CliError> {
-    let (audit_db, approval_db) = resolve_db_paths(config_path)?;
+    let (audit_db, approval_db, config) = resolve_db_paths(config_path)?;
 
     let audit_store = kavach_audit::AuditStore::builder()
         .open(&audit_db)
@@ -60,9 +63,6 @@ fn open_context(config_path: Option<&str>) -> Result<ApprovalContext, CliError> 
             )
         })?;
 
-    let config = ApprovalStoreConfig {
-        db_path: Some(approval_db.clone()),
-    };
     let broker = open_approval_broker(&approval_db, config, audit_store, Box::new(RealClock))
         .map_err(|e| {
             CliError::new(
@@ -115,28 +115,14 @@ pub fn list(config_path: Option<&str>, mode: OutputMode) -> Result<(), CliError>
 }
 
 pub fn approve(id: &str, config_path: Option<&str>, mode: OutputMode) -> Result<(), CliError> {
-    let approval_id = ApprovalId::new(id)
+    let _approval_id = ApprovalId::new(id)
         .map_err(|e| CliError::new(ExitCode::InvalidInput, format!("invalid approval ID: {e}")))?;
-    let ctx = open_context(config_path)?;
-
-    let actor = ApprovalActor::new("kavach-cli")
-        .map_err(|e| CliError::new(ExitCode::InvalidInput, format!("invalid actor: {e}")))?;
-
-    let token = ctx.broker.approve(&approval_id, &actor).map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("not found") {
-            CliError::new(ExitCode::InvalidInput, format!("approval not found: {id}"))
-        } else {
-            CliError::new(ExitCode::InternalError, format!("approval failed: {msg}"))
-        }
-    })?;
-
-    let token_hash_hex = hex::encode(token.hash());
-    let output = CliOutput::with_message(format!(
-        "approval {id} approved; token hash: {token_hash_hex}"
-    ));
-    output.render(mode);
-    Ok(())
+    let _ = (config_path, mode);
+    Err(CliError::new(
+        ExitCode::Unavailable,
+        "standalone approval is disabled because its one-time token cannot be transferred safely \
+         to the running gateway; approve through the authenticated dashboard/API instead",
+    ))
 }
 
 pub fn deny(id: &str, config_path: Option<&str>, mode: OutputMode) -> Result<(), CliError> {

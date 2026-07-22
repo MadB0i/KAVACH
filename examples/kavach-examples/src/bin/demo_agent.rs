@@ -359,7 +359,6 @@ Authorization: Bearer sk-secret-test-abc
         let has_redacted = s.contains("[REDACTED");
         let leak = s.contains("sk-secret-test-abc") || s.contains("a1b2c3d4e5f6");
         let preserved = s.contains("admin");
-        println!("    Original: {}", response);
         println!("    Redacted: {}", s);
         if has_redacted && !leak && preserved {
             pass += 1;

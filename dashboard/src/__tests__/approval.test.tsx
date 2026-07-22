@@ -53,7 +53,10 @@ describe('PendingApprovals', () => {
 
   it('approve action calls correct API', async () => {
     vi.mocked(api.getApprovals).mockResolvedValue(mockApprovals);
-    vi.mocked(api.approveApproval).mockResolvedValue({ success: true });
+    vi.mocked(api.approveApproval).mockResolvedValue({
+      approval_id: 'approval-1',
+      outcome: 'approved',
+    });
     renderWithProviders(<PendingApprovals />);
     await waitFor(() => {
       expect(screen.getByText('read')).toBeInTheDocument();
@@ -73,7 +76,10 @@ describe('PendingApprovals', () => {
 
   it('deny shows confirm dialog with reason', async () => {
     vi.mocked(api.getApprovals).mockResolvedValue(mockApprovals);
-    vi.mocked(api.denyApproval).mockResolvedValue({ success: true });
+    vi.mocked(api.denyApproval).mockResolvedValue({
+      approval_id: 'approval-1',
+      outcome: 'denied',
+    });
     renderWithProviders(<PendingApprovals />);
     await waitFor(() => {
       expect(screen.getByText('read')).toBeInTheDocument();

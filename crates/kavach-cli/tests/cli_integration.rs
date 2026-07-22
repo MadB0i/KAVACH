@@ -33,6 +33,35 @@ fn doctor_runs() {
 }
 
 #[test]
+fn serve_rejects_missing_gateway_token_before_startup() {
+    let config =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/kavach.example.toml");
+    kavach()
+        .env_remove("KAVACH_GATEWAY_TOKEN")
+        .args(["serve", "--config"])
+        .arg(config)
+        .assert()
+        .code(20)
+        .stdout(predicate::str::contains("starting KAVACH gateway").not())
+        .stderr(predicate::str::contains("64-character hexadecimal"));
+}
+
+#[test]
+fn serve_rejects_malformed_gateway_token_before_startup() {
+    let config =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/kavach.example.toml");
+    kavach()
+        .env("KAVACH_GATEWAY_TOKEN", "malformed")
+        .args(["serve", "--config"])
+        .arg(config)
+        .assert()
+        .code(20)
+        .stdout(predicate::str::contains("starting KAVACH gateway").not())
+        .stderr(predicate::str::contains("64-character hexadecimal"))
+        .stderr(predicate::str::contains("malformed").not());
+}
+
+#[test]
 fn config_validate_nonexistent_path() {
     kavach()
         .args(["config", "validate", "--file", "/nonexistent/config.toml"])

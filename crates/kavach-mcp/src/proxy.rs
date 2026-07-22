@@ -9,6 +9,7 @@ use kavach_core::ids::{AgentId, RequestId, SessionId};
 use kavach_core::request::{AgentSubjectBuilder, RequestContext, ToolRequest};
 use kavach_core::resource::Resource;
 use kavach_core::subject::TrustLevel;
+use kavach_redaction::Redactor;
 use kavach_runtime::outcome::RuntimeOutcome;
 use kavach_runtime::runtime::KavachRuntime;
 
@@ -116,12 +117,15 @@ impl McpProxy {
                 {
                     self.initialized = init_result.capabilities.tools.is_some();
                 }
-                Ok(Some(protocol::make_response(req.id.clone(), resp.result)))
+                Ok(Some(protocol::make_response(
+                    req.id.clone(),
+                    redact_response(resp.result),
+                )))
             }
             JsonRpcMessage::Error(err) => Ok(Some(protocol::make_error(
                 Some(req.id.clone()),
                 err.error.code,
-                &err.error.message,
+                &redact_text(&err.error.message),
             ))),
             _ => Err("unexpected response during initialize".into()),
         }
@@ -142,12 +146,15 @@ impl McpProxy {
                         }
                     }
                 }
-                Ok(Some(protocol::make_response(req.id.clone(), resp.result)))
+                Ok(Some(protocol::make_response(
+                    req.id.clone(),
+                    redact_response(resp.result),
+                )))
             }
             JsonRpcMessage::Error(err) => Ok(Some(protocol::make_error(
                 Some(req.id.clone()),
                 err.error.code,
-                &err.error.message,
+                &redact_text(&err.error.message),
             ))),
             _ => Err("unexpected response during tools/list".into()),
         }
@@ -226,7 +233,7 @@ impl McpProxy {
             JsonRpcMessage::Error(err) => Ok(Some(protocol::make_error(
                 Some(req.id.clone()),
                 err.error.code,
-                &err.error.message,
+                &redact_text(&err.error.message),
             ))),
             _ => Err("unexpected response from MCP server".into()),
         }
@@ -243,13 +250,14 @@ impl McpProxy {
     ) -> Result<Option<String>, String> {
         self.forward(req)?;
         match self.server_transport.receive()? {
-            JsonRpcMessage::Response(resp) => {
-                Ok(Some(protocol::make_response(req.id.clone(), resp.result)))
-            }
+            JsonRpcMessage::Response(resp) => Ok(Some(protocol::make_response(
+                req.id.clone(),
+                redact_response(resp.result),
+            ))),
             JsonRpcMessage::Error(err) => Ok(Some(protocol::make_error(
                 Some(req.id.clone()),
                 err.error.code,
-                &err.error.message,
+                &redact_text(&err.error.message),
             ))),
             _ => Err("unexpected response from server".into()),
         }
@@ -302,7 +310,11 @@ fn build_tool_request(
     let intent_str = arguments.as_ref().map(|a| {
         let s = serde_json::to_string(a).unwrap_or_default();
         if s.len() > 4000 {
-            s[..4000].to_string()
+            let mut end = 4000;
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            s[..end].to_string()
         } else {
             s
         }
@@ -317,58 +329,89 @@ fn build_tool_request(
 }
 
 fn redact_response(result: serde_json::Value) -> serde_json::Value {
-    if let serde_json::Value::Object(mut map) = result {
-        if let Some(content) = map.get_mut("content").and_then(|c| c.as_array_mut()) {
-            for item in content.iter_mut() {
-                if let serde_json::Value::Object(obj) = item {
-                    if obj.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        if let Some(text_val) = obj.get_mut("text") {
-                            if let Some(text) = text_val.as_str() {
-                                let redacted = redact_text(text);
-                                *text_val = serde_json::Value::String(redacted);
-                            }
-                        }
-                    }
-                }
-            }
+    match result {
+        serde_json::Value::String(value) => serde_json::Value::String(redact_text(&value)),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(redact_response).collect())
         }
-        serde_json::Value::Object(map)
-    } else {
-        result
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| {
+                    let value = if is_sensitive_key(&key) {
+                        serde_json::Value::String("[REDACTED:sensitive_field]".to_string())
+                    } else {
+                        redact_response(value)
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        value => value,
     }
 }
 
-/// Redact known secret patterns (Bearer tokens, API keys) from text.
+fn is_sensitive_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "key"
+            | "api_key"
+            | "apikey"
+            | "token"
+            | "access_token"
+            | "refresh_token"
+            | "secret"
+            | "client_secret"
+            | "password"
+            | "passwd"
+            | "credential"
+            | "credentials"
+            | "authorization"
+    )
+}
+
+/// Redact known secret patterns from text. Redaction failures never return the
+/// original potentially sensitive value.
 pub fn redact_text(input: &str) -> String {
-    let mut result = input.to_string();
-    if let Some(start) = result.find("Bearer ") {
-        let after_start = start + 7;
-        let remaining = &result[after_start..];
-        let end = remaining
-            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '}')
-            .unwrap_or(remaining.len());
-        if end >= 8 {
-            let actual_end = std::cmp::min(end, 128);
-            result.replace_range(after_start..after_start + actual_end, "[REDACTED]");
-        }
+    let redactor = kavach_redaction::CompositeRedactor::builder().build();
+    let redacted = redactor
+        .redact_text(input)
+        .map(|result| result.redacted)
+        .unwrap_or_else(|_| "[REDACTION FAILED]".to_string());
+    match serde_json::from_str(&redacted) {
+        Ok(value) => serde_json::to_string(&redact_response(value))
+            .unwrap_or_else(|_| "[REDACTION FAILED]".to_string()),
+        Err(_) => redacted,
     }
-    for pattern in &[
-        r#""key": ""#,
-        r#""api_key": ""#,
-        r#""token": ""#,
-        r#""secret": ""#,
-    ] {
-        let mut search_start = 0;
-        while let Some(start) = result[search_start..].find(pattern) {
-            let abs_start = search_start + start + pattern.len();
-            if let Some(quote_end) = result[abs_start..].find('"') {
-                let secret_len = std::cmp::min(quote_end, 64);
-                result.replace_range(abs_start..abs_start + secret_len, "[REDACTED]");
-                search_start = abs_start + "[REDACTED]".len();
-            } else {
-                break;
-            }
-        }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod redaction_tests {
+    use super::{redact_response, redact_text};
+
+    #[test]
+    fn all_bearer_tokens_are_redacted() {
+        let output =
+            redact_text("Bearer first-secret-token-1234 and Bearer second-secret-token-5678.");
+        assert!(!output.contains("first-secret-token"));
+        assert!(!output.contains("second-secret-token"));
     }
-    result
+
+    #[test]
+    fn nested_json_strings_are_redacted() {
+        let output = redact_response(serde_json::json!({
+            "content": [{"type": "text", "text": "password=supersecret123"}],
+            "nested": {"token": "Bearer another-secret-token-1234"},
+        }));
+        let serialized = serde_json::to_string(&output).unwrap();
+        assert!(!serialized.contains("supersecret123"));
+        assert!(!serialized.contains("another-secret-token"));
+    }
+
+    #[test]
+    fn oversized_text_fails_closed() {
+        let output = redact_text(&"x".repeat(kavach_redaction::MAX_INPUT_BYTES + 1));
+        assert_eq!(output, "[REDACTION FAILED]");
+    }
 }

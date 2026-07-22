@@ -2,9 +2,8 @@ use sha2::{Digest, Sha256};
 
 /// A 256-bit bearer token for API authentication.
 ///
-/// The token is generated from cryptographic randomness.  Only the SHA-256
-/// hash is stored for verification.  The raw token is returned once at
-/// startup and never persisted.
+/// Production startup accepts an operator-supplied 64-hex token and stores
+/// only its SHA-256 hash for verification. The raw token is never persisted.
 #[derive(Clone)]
 pub struct GatewayToken {
     /// SHA-256 hash of the raw token.
@@ -41,10 +40,16 @@ impl GatewayToken {
     /// Verify a raw token hex string against the stored hash.
     /// Uses constant-time comparison.
     pub fn verify(&self, token_hex: &str) -> bool {
+        if token_hex.len() != 64 || !token_hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
         let raw = match hex::decode(token_hex) {
             Ok(b) => b,
             Err(_) => return false,
         };
+        if raw.len() != 32 {
+            return false;
+        }
         let mut hasher = Sha256::new();
         hasher.update(&raw);
         let computed = hasher.finalize();

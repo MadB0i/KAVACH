@@ -128,14 +128,32 @@ impl ExecutionResult {
         redactor: &dyn kavach_redaction::Redactor,
     ) -> Result<Self, kavach_redaction::RedactionError> {
         match self {
-            ExecutionResult::Filesystem(outcome) => {
-                Ok(ExecutionResult::Filesystem(outcome.clone()))
-            }
+            ExecutionResult::Filesystem(outcome) => match outcome {
+                kavach_enforcement::FilesystemOutcome::FileRead { bytes, bytes_read } => {
+                    let redacted = redactor.redact_bytes(bytes)?;
+                    Ok(ExecutionResult::Filesystem(
+                        kavach_enforcement::FilesystemOutcome::FileRead {
+                            bytes: redacted.redacted.into_bytes(),
+                            bytes_read: *bytes_read,
+                        },
+                    ))
+                }
+                kavach_enforcement::FilesystemOutcome::DirectoryList { entries } => {
+                    let redacted_entries = entries
+                        .iter()
+                        .map(|entry| redactor.redact_text(entry).map(|result| result.redacted))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(ExecutionResult::Filesystem(
+                        kavach_enforcement::FilesystemOutcome::DirectoryList {
+                            entries: redacted_entries,
+                        },
+                    ))
+                }
+                _ => Ok(ExecutionResult::Filesystem(outcome.clone())),
+            },
             ExecutionResult::Command(outcome) => {
-                let stdout_str = String::from_utf8_lossy(&outcome.stdout);
-                let stderr_str = String::from_utf8_lossy(&outcome.stderr);
-                let redacted_stdout = redactor.redact_text(&stdout_str)?;
-                let redacted_stderr = redactor.redact_text(&stderr_str)?;
+                let redacted_stdout = redactor.redact_bytes(&outcome.stdout)?;
+                let redacted_stderr = redactor.redact_bytes(&outcome.stderr)?;
                 Ok(ExecutionResult::Command(
                     kavach_enforcement::command::CommandOutcome {
                         stdout: redacted_stdout.redacted.into_bytes(),
@@ -145,8 +163,7 @@ impl ExecutionResult {
                 ))
             }
             ExecutionResult::Network(outcome) => {
-                let body_str = String::from_utf8_lossy(&outcome.body);
-                let redacted_body = redactor.redact_text(&body_str)?;
+                let redacted_body = redactor.redact_bytes(&outcome.body)?;
                 let mut headers = outcome.headers.clone();
                 for (name, value) in &mut headers {
                     let lower = name.to_lowercase();
@@ -170,5 +187,43 @@ impl ExecutionResult {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::ExecutionResult;
+    use kavach_enforcement::FilesystemOutcome;
+
+    #[test]
+    fn filesystem_read_content_is_redacted() {
+        let redactor = kavach_redaction::CompositeRedactor::builder().build();
+        let result = ExecutionResult::Filesystem(FilesystemOutcome::FileRead {
+            bytes: b"password=supersecret123".to_vec(),
+            bytes_read: 23,
+        });
+
+        let redacted = result.redacted(&redactor).unwrap();
+        match redacted {
+            ExecutionResult::Filesystem(FilesystemOutcome::FileRead { bytes, bytes_read }) => {
+                let output = String::from_utf8(bytes).unwrap();
+                assert!(!output.contains("supersecret123"));
+                assert!(output.contains("[REDACTED:"));
+                assert_eq!(bytes_read, 23);
+            }
+            other => panic!("expected file read result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_utf8_filesystem_read_fails_closed() {
+        let redactor = kavach_redaction::CompositeRedactor::builder().build();
+        let result = ExecutionResult::Filesystem(FilesystemOutcome::FileRead {
+            bytes: vec![0xff, 0xfe],
+            bytes_read: 2,
+        });
+
+        assert!(result.redacted(&redactor).is_err());
     }
 }

@@ -198,7 +198,7 @@ export default function Overview() {
     { label: 'Command', state: healthStateFrom(data.ready?.adapter_command ?? data.ready?.adapters?.command), detail: 'Process controls' },
     { label: 'Network', state: healthStateFrom(data.ready?.adapter_network ?? data.ready?.adapters?.network), detail: 'SSRF controls' },
     { label: 'Audit chain', state: data.audit ? (data.audit.chain_valid ? 'healthy' : 'error') : 'unavailable', detail: 'Integrity ledger' },
-    { label: 'Approvals', state: healthStateFrom(data.ready?.approval_available ?? data.health?.approval_store), detail: 'Human control' },
+    { label: 'Approvals', state: healthStateFrom(data.ready?.approval_store ?? data.ready?.approval_available ?? data.health?.approval_store), detail: 'Human control' },
   ];
   const observed = componentStates.filter((component) => component.state !== 'unavailable');
   const healthyCount = observed.filter((component) => component.state === 'healthy').length;

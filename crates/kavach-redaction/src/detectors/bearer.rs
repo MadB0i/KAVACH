@@ -12,7 +12,11 @@ pub struct BearerTokenDetector {
 impl Default for BearerTokenDetector {
     fn default() -> Self {
         Self {
-            re: Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9\-._~+/]+=*\b").expect("valid bearer regex"),
+            // RFC 6750 bearer credentials may end in punctuation such as
+            // "-", "_", or "=". A trailing `\b` would therefore miss valid
+            // tokens whenever the final character is not a regex "word"
+            // character.
+            re: Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9\-._~+/]+=*").expect("valid bearer regex"),
         }
     }
 }
@@ -74,5 +78,23 @@ mod tests {
         let input = "first Bearer token1234567 second Bearer token8901234";
         let matches = d.detect(input);
         assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn bearer_token_can_end_in_valid_punctuation() {
+        let d = BearerTokenDetector::default();
+        for input in [
+            "Bearer a-aa-_0---",
+            "Bearer abcdefgh_",
+            "Bearer YWJjZGVmZw==",
+        ] {
+            let matches = d.detect(input);
+            assert_eq!(matches.len(), 1, "failed to detect {input}");
+            assert_eq!(
+                &input[matches[0].start..matches[0].end],
+                input,
+                "the entire credential should be covered"
+            );
+        }
     }
 }

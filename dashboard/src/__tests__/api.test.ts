@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fetchApi, setAuthToken, clearAuthToken, getAuthToken, getHealth, getReady, getApprovals, getApproval, approveApproval, denyApproval, getAuditEvents, verifyAudit, reloadPolicies } from '../api';
+import { AUTH_INVALIDATED_EVENT, fetchApi, setAuthToken, clearAuthToken, getAuthToken, getHealth, getReady, getApprovals, getApproval, approveApproval, denyApproval, getAuditEvents, verifyAudit, reloadPolicies } from '../api';
 
 function mockResponse(overrides: Partial<Response> = {}): Response {
   return {
@@ -81,10 +81,14 @@ describe('API Module', () => {
   });
 
   it('fetchApi returns 401 error', async () => {
+    const invalidated = vi.fn();
+    window.addEventListener(AUTH_INVALIDATED_EVENT, invalidated);
     setAuthToken('token');
     mockFetch.mockResolvedValueOnce(mockErrorResponse(401, {}));
     await expect(fetchApi('/api/test')).rejects.toThrow('Authentication failed');
     expect(getAuthToken()).toBeNull();
+    expect(invalidated).toHaveBeenCalledOnce();
+    window.removeEventListener(AUTH_INVALIDATED_EVENT, invalidated);
   });
 
   it('getHealth calls correct endpoint', async () => {
