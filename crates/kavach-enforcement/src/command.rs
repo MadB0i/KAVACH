@@ -10,6 +10,10 @@
 //! - Working-directory containment
 //! - Environment variable filtering
 //! - Timeout and output limits
+//!
+//! Timeout termination kills and reaps the directly spawned child process.
+//! The standard library does not provide portable process-tree termination,
+//! so descendants created by that child are not guaranteed to be terminated.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -834,11 +838,36 @@ fn execute_process(config: ProcessConfig<'_>) -> Result<CommandOutcome, CommandE
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
 
-    let (stdout_read, stderr_read) = std::thread::scope(|s| {
+    let (wait_result, stdout_read, stderr_read) = std::thread::scope(|s| {
         let stdout_thread = s.spawn(|| read_stream(stdout_handle, config.stdout_limit));
         let stderr_thread = s.spawn(|| read_stream(stderr_handle, config.stderr_limit));
-        (stdout_thread.join(), stderr_thread.join())
+
+        // Wait while the output readers drain the pipes. Joining the readers
+        // before waiting would deadlock until a quiet, long-running child exits
+        // because both readers block waiting for EOF.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let wait_result = match wait_timeout(&mut child, remaining) {
+            Ok(Some(status)) => Ok(Some(status)),
+            Ok(None) => kill_and_reap(&mut child).map(|()| None),
+            Err(wait_error) => match kill_and_reap(&mut child) {
+                Ok(()) => Err(wait_error),
+                Err(reap_error) => Err(std::io::Error::new(
+                    reap_error.kind(),
+                    format!("process wait failed: {wait_error}; reaping failed: {reap_error}"),
+                )),
+            },
+        };
+
+        // The child has exited or has been killed and reaped, so both pipe
+        // writers are closed and the reader threads can terminate cleanly.
+        (wait_result, stdout_thread.join(), stderr_thread.join())
     });
+
+    let exit_code = match wait_result {
+        Ok(Some(status)) => status.code(),
+        Ok(None) => return Err(CommandError::Timeout(config.timeout_secs)),
+        Err(error) => return Err(CommandError::ProcessFailed(error.to_string())),
+    };
 
     let stdout = stdout_read
         .map_err(|_| CommandError::ProcessFailed("stdout reader panicked".into()))?
@@ -846,22 +875,6 @@ fn execute_process(config: ProcessConfig<'_>) -> Result<CommandOutcome, CommandE
     let stderr = stderr_read
         .map_err(|_| CommandError::ProcessFailed("stderr reader panicked".into()))?
         .map_err(CommandError::Io)?;
-
-    // Wait for child with timeout.
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let exit_code = match wait_timeout(&mut child, remaining) {
-        Ok(Some(status)) => status.code(),
-        Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(CommandError::Timeout(config.timeout_secs));
-        }
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(CommandError::ProcessFailed(e.to_string()));
-        }
-    };
 
     let duration = start.elapsed();
 
@@ -874,6 +887,16 @@ fn execute_process(config: ProcessConfig<'_>) -> Result<CommandOutcome, CommandE
         risk: config.risk,
         dry_run: false,
     })
+}
+
+/// Kill the directly spawned child and wait for it to be reaped.
+///
+/// This does not claim to terminate descendants of the child process.
+fn kill_and_reap(child: &mut std::process::Child) -> Result<(), std::io::Error> {
+    // A concurrent natural exit can make `kill` report an error. `wait` is
+    // still mandatory: a successful wait proves the direct child is reaped.
+    let _kill_result = child.kill();
+    child.wait().map(|_| ())
 }
 
 /// Read from a stream with a hard byte limit.
@@ -937,7 +960,14 @@ mod tests {
     use kavach_core::ids::{AgentId, RequestId, SessionId};
     use kavach_core::permit::PermitScope;
     use kavach_core::request::{AgentSubjectBuilder, RequestContext};
-    use std::time::Duration;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    const TIMEOUT_HELPER_MODE: &str = "KAVACH_TIMEOUT_HELPER_MODE";
+    const TIMEOUT_HELPER_PORT: &str = "KAVACH_TIMEOUT_HELPER_PORT";
+    const TIMEOUT_HELPER_READY_FILE: &str = "KAVACH_TIMEOUT_HELPER_READY_FILE";
+    const TIMEOUT_HELPER_TEST: &str = "command::tests::timeout_helper_process";
 
     fn make_subject() -> kavach_core::subject::AgentSubject {
         AgentSubjectBuilder::new(
@@ -1003,6 +1033,47 @@ mod tests {
             .unwrap_or_default()
             .subsec_nanos();
         format!("{nanos:08x}")
+    }
+
+    fn timeout_helper_invocation() -> (String, String) {
+        let current_exe = dunce::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let helper_directory = current_exe.parent().unwrap().to_string_lossy().into_owned();
+        let executable = current_exe
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        (helper_directory, executable)
+    }
+
+    #[test]
+    fn timeout_helper_process() {
+        if std::env::var_os(TIMEOUT_HELPER_MODE).is_none() {
+            return;
+        }
+
+        let port = std::env::var(TIMEOUT_HELPER_PORT)
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let ready_file = std::env::var_os(TIMEOUT_HELPER_READY_FILE).unwrap();
+        let _listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+        std::fs::write(ready_file, std::process::id().to_string()).unwrap();
+
+        {
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(b"timeout helper stdout ready\n").unwrap();
+            stdout.flush().unwrap();
+        }
+        {
+            let mut stderr = std::io::stderr().lock();
+            stderr.write_all(b"timeout helper stderr ready\n").unwrap();
+            stderr.flush().unwrap();
+        }
+
+        loop {
+            std::thread::park_timeout(Duration::from_secs(60));
+        }
     }
 
     // ----------------------------------------------------------------
@@ -1301,27 +1372,74 @@ mod tests {
     fn timeout_kills_process() {
         let tmp = std::env::temp_dir().join(format!("kavach_cmd_to_{}", uuid_simple()));
         std::fs::create_dir_all(&tmp).unwrap();
+        let ready_file = tmp.join("helper-ready");
+        let port_reservation = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let helper_port = port_reservation.local_addr().unwrap().port();
+        drop(port_reservation);
+
+        let (helper_directory, executable) = timeout_helper_invocation();
         let enforcer = make_enforcer(&tmp);
-        // Create a command that sleeps longer than the timeout.
-        let (exe, args): (&str, &[&str]) = if cfg!(windows) {
-            ("powershell", &["-Command", "Start-Sleep -Seconds 30"])
-        } else {
-            ("sleep", &["30"])
-        };
-        // Skip Windows powershell since it's a shell.
-        if cfg!(windows) {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return;
-        }
-        let req = cmd_request(exe, args);
+        let req = cmd_request(
+            &executable,
+            &["--exact", TIMEOUT_HELPER_TEST, "--nocapture"],
+        );
         let mut permit = make_permit(&req);
+        let timeout_seconds = 2;
         let input = CommandInput {
-            timeout_seconds: Some(1),
+            env_vars: vec![
+                ("PATH".into(), helper_directory),
+                (TIMEOUT_HELPER_MODE.into(), "1".into()),
+                (TIMEOUT_HELPER_PORT.into(), helper_port.to_string()),
+                (
+                    TIMEOUT_HELPER_READY_FILE.into(),
+                    ready_file.to_string_lossy().into_owned(),
+                ),
+            ],
+            timeout_seconds: Some(timeout_seconds),
             ..Default::default()
         };
+
+        let started = Instant::now();
         let result = enforcer.execute(&req, &mut permit, &input);
-        assert!(matches!(result, Err(CommandError::Timeout(1))));
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(
+                &result,
+                Err(CommandError::Timeout(seconds)) if *seconds == timeout_seconds
+            ),
+            "unexpected timeout result: {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "timeout and output readers exceeded bounded deadline: {elapsed:?}"
+        );
         assert!(permit.is_consumed());
+
+        let reuse = enforcer.execute(&req, &mut permit, &input);
+        assert!(matches!(reuse, Err(CommandError::PermitConsumed)));
+
+        let helper_pid = std::fs::read_to_string(&ready_file).unwrap();
+        assert!(helper_pid.parse::<u32>().is_ok());
+
+        // The helper holds this listener for its entire lifetime. Being able
+        // to rebind proves the direct child is no longer running after the
+        // timeout path returns. Use a bounded retry for scheduler variance.
+        let release_deadline = Instant::now() + Duration::from_secs(2);
+        let child_stopped = loop {
+            if TcpListener::bind(("127.0.0.1", helper_port)).is_ok() {
+                break true;
+            }
+            if Instant::now() >= release_deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            child_stopped,
+            "helper process {helper_pid} still holds its listener after timeout"
+        );
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
