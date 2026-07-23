@@ -1,19 +1,15 @@
 # cargo-deny configuration
 # https://embarkstudios.github.io/cargo-deny/
 
-[graph]
-# Skip dev-dependencies when checking (they are not shipped)
-dev-dependencies = false
+# Development dependencies are included in the dependency graph by default so
+# security checks cover the complete workspace.
 
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-unsound = "deny"
-notice = "warn"
+unmaintained = "workspace"
+unsound = "all"
 ignore = []
 
 [licenses]
-unlicensed = "deny"
 allow = [
     "Apache-2.0",
     "MIT",
@@ -25,11 +21,7 @@ allow = [
     "Zlib",
     "OpenSSL",
 ]
-deny = []
-copyleft = "deny"
-allow-osi-fsf-free = "neither"
-default = "deny"
-confidence = 0.8
+confidence-threshold = 0.8
 
 [licenses.private]
 ignore = true
