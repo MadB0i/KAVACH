@@ -108,6 +108,9 @@ enum PolicyAction {
         /// Path to request JSON file
         #[arg(short, long)]
         request: String,
+        /// Append the decision to a JSONL feed log for the local dashboard
+        #[arg(long)]
+        feed_log: Option<String>,
     },
     /// Explain policy decision for a request
     Explain {
@@ -117,6 +120,21 @@ enum PolicyAction {
         /// Path to request JSON file
         #[arg(short, long)]
         request: String,
+        /// Dump the full AuthorizationDecision (including trace) as JSON
+        #[arg(long)]
+        json: bool,
+        /// Append the decision to a JSONL feed log for the local dashboard
+        #[arg(long)]
+        feed_log: Option<String>,
+    },
+    /// Batch-test a policy against expected-outcome scenarios
+    Test {
+        /// Path to policy file
+        #[arg(short, long)]
+        policy: String,
+        /// Path to scenarios JSON file
+        #[arg(short, long)]
+        scenarios: String,
     },
 }
 
@@ -189,11 +207,19 @@ fn main() {
         },
         Some(Commands::Policy { action }) => match action {
             PolicyAction::Validate { file } => commands::policy::validate(&file, mode),
-            PolicyAction::Check { policy, request } => {
-                commands::policy::check(&policy, &request, mode)
-            }
-            PolicyAction::Explain { policy, request } => {
-                commands::policy::explain(&policy, &request, mode)
+            PolicyAction::Check {
+                policy,
+                request,
+                feed_log,
+            } => commands::policy::check(&policy, &request, mode, feed_log.as_deref()),
+            PolicyAction::Explain {
+                policy,
+                request,
+                json,
+                feed_log,
+            } => commands::policy::explain(&policy, &request, mode, json, feed_log.as_deref()),
+            PolicyAction::Test { policy, scenarios } => {
+                commands::policy::test_policy(&policy, &scenarios, mode)
             }
         },
         Some(Commands::Request { action }) => match action {

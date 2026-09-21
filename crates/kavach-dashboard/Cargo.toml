@@ -1,0 +1,31 @@
+[package]
+name = "kavach-dashboard"
+description = "Local read-only dashboard for the KAVACH security runtime"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kavach-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+kavach-core = { workspace = true }
+kavach-policy = { workspace = true }
+kavach-audit = { workspace = true }
+
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+futures-core = "0.3"
+
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["macros"] }
+
+[lints]
+workspace = true

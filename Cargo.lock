@@ -1116,6 +1116,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-dashboard"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "clap",
+ "futures-core",
+ "kavach-audit",
+ "kavach-core",
+ "kavach-policy",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "kavach-enforcement"
 version = "0.1.0"
 dependencies = [

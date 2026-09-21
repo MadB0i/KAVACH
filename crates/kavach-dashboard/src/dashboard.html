@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kavach — Local Decision Dashboard</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 900px;
+         padding: 16px; background: #111; color: #ddd; }
+  h1 { font-size: 20px; }
+  .card { border: 1px solid #333; border-radius: 6px; padding: 8px 12px;
+          margin: 8px 0; background: #1a1a1a; }
+  .Allow { border-left: 5px solid #2c7; }
+  .Deny { border-left: 5px solid #c33; }
+  .RequireApproval { border-left: 5px solid #cc3; }
+  .effect { font-weight: bold; }
+  .Allow .effect { color: #2c7; } .Deny .effect { color: #c33; }
+  .RequireApproval .effect { color: #cc3; }
+  details { margin-top: 6px; } summary { cursor: pointer; color: #9cf; }
+  pre { white-space: pre-wrap; font-size: 12px; }
+  #filters input, #filters select, #filters button { margin: 2px; padding: 4px; }
+  #policy { border: 1px solid #333; border-radius: 6px; padding: 8px 12px; }
+  .meta { color: #888; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Kavach — Local Decision Dashboard</h1>
+
+<h2>Live feed</h2>
+<div id="live"></div>
+
+<h2>History</h2>
+<div id="filters">
+  <input id="q" placeholder="search…" size="20">
+  <select id="decision">
+    <option value="">any decision</option>
+    <option value="Allow">Allow</option>
+    <option value="Deny">Deny</option>
+    <option value="RequireApproval">RequireApproval</option>
+  </select>
+  <input id="executable" placeholder="executable…" size="12">
+  <input id="rule" placeholder="rule id…" size="16">
+  <button onclick="loadHistory()">Filter</button>
+</div>
+<div id="history"></div>
+
+<h2>Policy</h2>
+<div id="policy"><button onclick="loadPolicy()">Load policy summary</button>
+<div id="policyBody"></div></div>
+
+<script>
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+function card(e) {
+  const trace = e.trace ? `<details><summary>trace</summary><pre>${esc(JSON.stringify(e.trace, null, 2))}</pre></details>` : "";
+  const rules = (e.matched_rule_ids || []).map(esc).join(", ") || "(none)";
+  return `<div class="card ${esc(e.effect)}"><span class="effect">${esc(e.effect)}</span> ` +
+    `<code>${esc(e.title || "")}</code><div class="meta">${esc(e.reason || "")} · rules: ${rules} · ${esc(e.request_id || "")}</div>` +
+    `<div>${esc(e.explanation || "")}</div>${trace}</div>`;
+}
+function prependLive(e) {
+  const div = document.createElement("div");
+  div.innerHTML = card(e);
+  document.getElementById("live").prepend(div);
+}
+const src = new EventSource("/events");
+src.onmessage = ev => { try { prependLive(JSON.parse(ev.data)); } catch (err) {} };
+async function loadHistory() {
+  const p = new URLSearchParams({
+    q: document.getElementById("q").value,
+    decision: document.getElementById("decision").value,
+    executable: document.getElementById("executable").value,
+    rule: document.getElementById("rule").value,
+    limit: "50"
+  });
+  const res = await fetch("/api/history?" + p.toString());
+  const data = await res.json();
+  document.getElementById("history").innerHTML =
+    (data.events || []).map(card).join("") || "<p>No events.</p>";
+}
+async function loadPolicy() {
+  const res = await fetch("/api/policy");
+  const data = await res.json();
+  document.getElementById("policyBody").innerHTML = "<pre>" + esc(JSON.stringify(data, null, 2)) + "</pre>";
+}
+loadHistory();
+</script>
+</body>
+</html>

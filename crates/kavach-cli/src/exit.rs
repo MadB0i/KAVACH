@@ -10,6 +10,8 @@ pub enum ExitCode {
     InvalidInput = 20,
     PolicyError = 21,
     AuditError = 22,
+    /// One or more `policy test` scenarios failed (usable in CI).
+    TestFailures = 23,
     InternalError = 30,
     Unavailable = 40,
 }
