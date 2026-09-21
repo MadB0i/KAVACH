@@ -246,6 +246,35 @@ impl PolicyEngine {
                     },
                 );
             }
+            // Step 1c: Built-in shell-hazard baseline. Same Tier 2 philosophy:
+            // every argument of every command is scanned with the shared
+            // scanner, regardless of executable, so `echo 'x' > file` can no
+            // longer ride an executable allowlist past the engine. No policy
+            // file is consulted or required.
+            if let Some(reason) = shell_hazard_reason(cmd) {
+                let mut ids: BTreeSet<RuleId> = BTreeSet::new();
+                if let Ok(baseline_id) = RuleId::new(BASELINE_SHELL_HAZARD_RULE_ID) {
+                    ids.insert(baseline_id);
+                }
+                return AuthorizationDecision::new_with_trace(
+                    DecisionEffect::Deny,
+                    ReasonCode::KavachDenyExplicitRule,
+                    format!(
+                        "denied by built-in baseline ({}): refusing {} invocation",
+                        reason,
+                        executable_basename(cmd.executable())
+                    ),
+                    ids,
+                    evaluated_at,
+                    request_id,
+                    None,
+                    None,
+                    kavach_core::DecisionTrace {
+                        baseline_triggered: Some(reason),
+                        failed_conditions: Vec::new(),
+                    },
+                );
+            }
         }
 
         // Step 2: Evaluate all rules, collecting IDs by effect group.
@@ -432,6 +461,13 @@ fn build_argument_matchers(
 /// shows up in `matched_rule_ids` like any other explicit deny.
 pub const BASELINE_DANGEROUS_INTERPRETER_RULE_ID: &str = "baseline-dangerous-interpreter";
 
+/// Synthetic rule ID attributed when the built-in shell-hazard baseline
+/// fires (chaining, piping, redirection, subshell grouping in command
+/// arguments, regardless of executable). Substitution/expansion hazards
+/// (`$(...)`, backticks, `$VAR`) stay attributed to
+/// [`BASELINE_DANGEROUS_INTERPRETER_RULE_ID`].
+pub const BASELINE_SHELL_HAZARD_RULE_ID: &str = "baseline-shell-hazard";
+
 /// Basename (lower-cased, `.exe` stripped) of an executable path.
 fn executable_basename(exe: &str) -> String {
     let base = exe.rsplit(['/', '\\']).next().unwrap_or(exe).to_lowercase();
@@ -499,6 +535,40 @@ pub(crate) fn dangerous_invocation_reason(
         return Some("shell substitution or expansion in arguments");
     }
     None
+}
+
+/// Machine-readable reason when the shell-hazard baseline fires.
+///
+/// Scans **every** argument with the shared
+/// [`kavach_core::scan_dangerous_shell_constructs`] scanner, regardless of
+/// executable — deliberately not scoped to known interpreters, so a bare
+/// `echo 'x' > file` cannot slip past an executable allowlist. Substitution
+/// hazards are excluded here (they stay attributed to the
+/// dangerous-interpreter baseline above); chaining, piping, redirection and
+/// subshell grouping are reported. Returns `None` when no covered hazard is
+/// present. Never echoes argument payloads.
+pub(crate) fn shell_hazard_reason(cmd: &kavach_core::resource::CommandResource) -> Option<String> {
+    use kavach_core::shell::ShellHazard;
+    use std::collections::BTreeSet;
+    let mut kinds: BTreeSet<ShellHazard> = BTreeSet::new();
+    for arg in cmd.arguments() {
+        for hazard in kavach_core::scan_dangerous_shell_constructs(arg) {
+            match hazard {
+                ShellHazard::CommandSubstitution
+                | ShellHazard::Backtick
+                | ShellHazard::EnvVarBraced
+                | ShellHazard::EnvVar => {}
+                _ => {
+                    kinds.insert(hazard);
+                }
+            }
+        }
+    }
+    if kinds.is_empty() {
+        return None;
+    }
+    let labels: Vec<&str> = kinds.iter().map(|h| h.as_str()).collect();
+    Some(format!("shell hazards in arguments: {}", labels.join(", ")))
 }
 
 /// Join rule IDs into a comma-separated string for human explanation.
@@ -3545,6 +3615,62 @@ mod tests {
         let engine = PolicyEngine::new(vec![allow_python_policy()]).unwrap();
         let req = cmd_request_with("python", &["script.py"], make_context());
         assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    // Phase 1b: bare chaining/piping/redirection/subshell hazards in
+    // arguments are denied for ANY executable, even allow-listed ones.
+    #[test]
+    fn baseline_denies_echo_redirect_for_allowlisted_executable() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-echo").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["echo".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+        let req = cmd_request_with("echo", &["x", ">", "file"], make_context());
+        let decision = engine.evaluate(&req);
+        assert_eq!(decision.effect, DecisionEffect::Deny);
+        assert_eq!(decision.reason, ReasonCode::KavachDenyExplicitRule);
+        assert!(
+            decision
+                .matched_rule_ids
+                .contains(&RuleId::new(BASELINE_SHELL_HAZARD_RULE_ID).unwrap())
+        );
+        let trace = match decision.trace {
+            Some(t) => t,
+            None => panic!("baseline denial carries a trace"),
+        };
+        assert!(trace.baseline_triggered.is_some());
+    }
+
+    #[test]
+    fn baseline_shell_hazard_leaves_clean_args_alone() {
+        // `echo hello` has no hazard: the allow-rule still decides.
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-echo").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["echo".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+        let req = cmd_request_with("echo", &["hello"], make_context());
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+        // Pipes / chaining on non-interpreters are denied too.
+        let piped = cmd_request_with("echo", &["a", "|", "cat"], make_context());
+        assert_eq!(engine.evaluate(&piped).effect, DecisionEffect::Deny);
     }
 
     #[test]
