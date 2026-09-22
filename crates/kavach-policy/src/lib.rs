@@ -28,10 +28,13 @@ pub mod model;
 /// TOML policy document parsing and file loading.
 pub mod io;
 
-pub use engine::PolicyEngine;
+pub use engine::{PolicyEngine, PolicySummary};
 pub use io::MAX_POLICY_FILE_SIZE;
 pub use io::{PolicyLoadError, load_policy_from_file, load_policy_from_str};
-pub use model::{DefaultEffect, Effect, Policy, PolicyValidationError, Rule, RuleConditions};
+pub use model::{
+    ArgumentRules, DefaultEffect, Effect, Policy, PolicyValidationError, PolicyWarning, Rule,
+    RuleConditions, is_relative_glob_pattern,
+};
 
 #[cfg(test)]
 mod proptests;

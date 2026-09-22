@@ -5,6 +5,7 @@ import PageHeader from '../components/PageHeader';
 import EmptyState from '../components/EmptyState';
 import LoadingState from '../components/LoadingState';
 import StatusBadge from '../components/StatusBadge';
+import { Activity, Pause, Play, Trash2 } from 'lucide-react';
 
 export default function LiveRequests() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
@@ -65,6 +66,8 @@ export default function LiveRequests() {
     <div className="page">
       <PageHeader
         title="Live Requests"
+        icon={Activity}
+        eyebrow="Streaming audit view"
         subtitle={`${events.length} request${events.length !== 1 ? 's' : ''}`}
         actions={
           <>
@@ -73,10 +76,10 @@ export default function LiveRequests() {
               onClick={() => setPaused(!paused)}
               aria-label={paused ? 'Resume' : 'Pause'}
             >
-              {paused ? '\u25B6 Resume' : '\u23F8 Pause'}
+              {paused ? <><Play size={13} /> Resume</> : <><Pause size={13} /> Pause</>}
             </button>
             <button className="btn btn--ghost btn--sm" onClick={clearEvents} aria-label="Clear events">
-              Clear
+              <Trash2 size={13} /> Clear
             </button>
           </>
         }
@@ -88,19 +91,19 @@ export default function LiveRequests() {
       )}
 
       {events.length === 0 ? (
-        <EmptyState icon={'\u25B6'} title="No Requests" description="Waiting for incoming requests..." />
+        <EmptyState icon={Activity} title="No requests observed" description="Evaluate a tool request through the gateway to populate this real-time security feed." />
       ) : (
         <div className="live-requests" ref={containerRef} role="log" aria-label="Live request events" aria-live="polite">
           {events.map((ev) => (
             <div key={`${ev.sequence}-${ev.timestamp}`} className="live-request-item">
               <span className="live-request-item__time">
-                {ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '?'}
+                {ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : 'Time unavailable'}
               </span>
-              <span className="live-request-item__id" title={ev.request_id}>
-                {ev.request_id ? ev.request_id.slice(0, 16) : '\u2014'}
+              <span className="live-request-item__id" title={ev.request_id || undefined}>
+                {ev.request_id ? ev.request_id.slice(0, 16) : 'Not correlated'}
               </span>
-              <span className="live-request-item__op">{ev.operation || '\u2014'}</span>
-              <StatusBadge variant={getVariant(ev)} label={ev.decision || ev.category || '?'} />
+              <span className="live-request-item__op">{ev.operation || 'Unavailable'}</span>
+              <StatusBadge variant={getVariant(ev)} label={ev.decision || ev.category || 'Recorded'} />
               <span className="live-request-item__summary" title={ev.summary}>
                 {ev.summary ? (ev.summary.length > 50 ? ev.summary.slice(0, 47) + '...' : ev.summary) : ''}
               </span>

@@ -156,16 +156,18 @@ fn secret_redaction_removes_bearer_tokens() {
     let input = r#"Bearer abcdef1234567890abcdef1234567890abcdef12"#;
     let result = kavach_mcp::proxy::redact_text(input);
     assert!(
-        result.contains("[REDACTED]"),
+        result.contains("[REDACTED:"),
         "Bearer token should be redacted"
     );
+    assert!(!result.contains("abcdef1234567890"));
 }
 
 #[test]
 fn secret_redaction_removes_api_keys() {
     let input = r#"{"key": "sk-abc123def456"}"#;
     let result = kavach_mcp::proxy::redact_text(input);
-    assert!(result.contains("[REDACTED]"), "API key should be redacted");
+    assert!(result.contains("[REDACTED:"), "API key should be redacted");
+    assert!(!result.contains("sk-abc123def456"));
 }
 
 // ── Evaluate Tests ──────────────────────────────────────────────────────

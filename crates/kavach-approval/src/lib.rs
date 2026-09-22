@@ -49,7 +49,7 @@ mod tests {
     use crate::token::ApprovalToken;
     use crate::types::{
         ApprovalActor, ApprovalRequest, ApprovalState, ApprovalStoreConfig,
-        MAX_APPROVAL_SUMMARY_LENGTH, MAX_PENDING_APPROVALS, MAX_QUERY_LIMIT,
+        DEFAULT_MAX_PENDING_APPROVALS, MAX_APPROVAL_SUMMARY_LENGTH, MAX_QUERY_LIMIT,
     };
 
     /// Wraps an `Arc<Mutex<FakeClock>>` so the broker's `Clock` bound is satisfied
@@ -65,7 +65,7 @@ mod tests {
     /// Test context holding a fully wired broker and its dependencies.
     struct TestContext {
         broker: SqliteApprovalBroker<SqliteApprovalStore>,
-        _audit_store: AuditStore,
+        audit_store: AuditStore,
         clock: Arc<Mutex<FakeClock>>,
         _tmp: Option<tempfile::TempDir>,
     }
@@ -118,14 +118,15 @@ mod tests {
         let shared_clock = SharedFakeClock(Arc::clone(&clock));
         let config = ApprovalStoreConfig::default();
         let audit_store = AuditStore::builder().open_in_memory().unwrap();
-        let broker =
-            SqliteApprovalBroker::open_in_memory(config, audit_store, Box::new(shared_clock))
-                .unwrap();
-        // Open a second audit store for the test context (audit stores are independent).
-        let audit_store2 = AuditStore::builder().open_in_memory().unwrap();
+        let broker = SqliteApprovalBroker::open_in_memory(
+            config,
+            audit_store.clone(),
+            Box::new(shared_clock),
+        )
+        .unwrap();
         TestContext {
             broker,
-            _audit_store: audit_store2,
+            audit_store,
             clock,
             _tmp: None,
         }
@@ -137,11 +138,11 @@ mod tests {
         let config = ApprovalStoreConfig::default();
         let audit_store = AuditStore::builder().open_in_memory().unwrap();
         let broker =
-            SqliteApprovalBroker::open(path, config, audit_store, Box::new(shared_clock)).unwrap();
-        let audit_store2 = AuditStore::builder().open_in_memory().unwrap();
+            SqliteApprovalBroker::open(path, config, audit_store.clone(), Box::new(shared_clock))
+                .unwrap();
         TestContext {
             broker,
-            _audit_store: audit_store2,
+            audit_store,
             clock,
             _tmp: None,
         }
@@ -325,7 +326,7 @@ mod tests {
         let ctx = setup();
         // Fill up to the limit by creating MAX_PENDING_APPROVALS separate requests.
         // Since each request must have a unique digest, we create different requests.
-        for i in 0..MAX_PENDING_APPROVALS {
+        for i in 0..DEFAULT_MAX_PENDING_APPROVALS {
             let req = ApprovalRequest {
                 request: ToolRequest::new(
                     RequestId::new(format!("bulk-{i}")).unwrap(),
@@ -714,9 +715,12 @@ mod tests {
             ctx.clock.lock().unwrap().advance(Duration::seconds(2));
         }
         let first = ctx.broker.expire_overdue().unwrap();
+        let latest_after_first = ctx.audit_store.latest_event().unwrap().unwrap().sequence;
         let second = ctx.broker.expire_overdue().unwrap();
+        let latest_after_second = ctx.audit_store.latest_event().unwrap().unwrap().sequence;
         assert_eq!(first.len(), 1);
         assert!(second.is_empty());
+        assert_eq!(latest_after_second, latest_after_first);
     }
 
     #[test]

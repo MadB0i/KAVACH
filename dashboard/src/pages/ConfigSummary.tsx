@@ -5,6 +5,7 @@ import PageHeader from '../components/PageHeader';
 import SectionCard from '../components/SectionCard';
 import LoadingState from '../components/LoadingState';
 import ErrorState from '../components/ErrorState';
+import { Settings2 } from 'lucide-react';
 
 export default function ConfigSummary() {
   const [statusInfo, setStatusInfo] = useState<StatusInfo | null>(null);
@@ -37,28 +38,28 @@ export default function ConfigSummary() {
 
   return (
     <div className="page">
-      <PageHeader title="Configuration Summary" />
+      <PageHeader title="Configuration Summary" icon={Settings2} eyebrow="Runtime metadata" />
 
       <SectionCard title="Service Info">
         <div className="config-block">
           <div className="config-row">
             <span className="config-row__key">Service</span>
-            <span className="config-row__value">{statusInfo?.service || '?'}</span>
+            <span className="config-row__value">{statusInfo?.service || 'Unavailable'}</span>
           </div>
           <div className="config-row">
             <span className="config-row__key">Version</span>
-            <span className="config-row__value">{statusInfo?.version || '?'}</span>
+            <span className="config-row__value">{statusInfo?.version || 'Unavailable'}</span>
           </div>
           <div className="config-row">
             <span className="config-row__key">Bind Address</span>
-            <span className="config-row__value">{statusInfo?.bind_address || '?'}</span>
+            <span className="config-row__value">{statusInfo?.bind || statusInfo?.bind_address || 'Unavailable'}</span>
           </div>
           <div className="config-row">
             <span className="config-row__key">Uptime</span>
             <span className="config-row__value">
-              {statusInfo?.uptime !== undefined
-                ? `${Math.floor(statusInfo.uptime / 3600)}h ${Math.floor((statusInfo.uptime % 3600) / 60)}m`
-                : '?'}
+              {(statusInfo?.uptime_seconds ?? statusInfo?.uptime) !== undefined
+                ? `${Math.floor((statusInfo?.uptime_seconds ?? statusInfo?.uptime ?? 0) / 3600)}h ${Math.floor(((statusInfo?.uptime_seconds ?? statusInfo?.uptime ?? 0) % 3600) / 60)}m`
+                : 'Unavailable'}
             </span>
           </div>
         </div>
@@ -70,10 +71,10 @@ export default function ConfigSummary() {
             <div className="config-empty">No policies loaded</div>
           ) : (
             policies.map((p) => (
-              <div key={p.id} className="config-row">
-                <span className="config-row__key">{p.name || p.id}</span>
+              <div key={p.policy_id || p.id} className="config-row">
+                <span className="config-row__key">{p.policy_name || p.name || p.policy_id || p.id}</span>
                 <span className="config-row__value">
-                  {p.rule_count ?? '?'} rules, effect: {p.default_effect || '?'}
+                  {p.rule_count ?? 'Unavailable'} rules, effect: {p.default_effect || 'not exposed'}
                 </span>
               </div>
             ))
@@ -81,13 +82,17 @@ export default function ConfigSummary() {
         </div>
       </SectionCard>
 
-      {ready && ready.adapters && (
+      {ready && (
         <SectionCard title="Adapter Status">
           <div className="config-block">
-            {Object.entries(ready.adapters).map(([name, status]) => (
+            {Object.entries(ready.adapters || {
+              filesystem: ready.adapter_filesystem,
+              command: ready.adapter_command,
+              network: ready.adapter_network,
+            }).map(([name, status]) => (
               <div key={name} className="config-row">
                 <span className="config-row__key">{name}</span>
-                <span className="config-row__value">{String(status)}</span>
+                <span className="config-row__value">{status === undefined ? 'Unavailable' : String(status)}</span>
               </div>
             ))}
           </div>

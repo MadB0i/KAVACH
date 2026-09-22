@@ -15,13 +15,20 @@ const CURRENT_SCHEMA_VERSION: u64 = 1;
 /// SQLite-backed persistent approval store.
 pub(crate) struct SqliteApprovalStore {
     conn: Mutex<Connection>,
-    #[allow(dead_code)]
     config: ApprovalStoreConfig,
 }
 
 impl SqliteApprovalStore {
     /// Opens or creates the approval database at the given path.
     pub fn open(path: &str, config: ApprovalStoreConfig) -> Result<Self, ApprovalError> {
+        validate_config(&config)?;
+        if let Some(parent) = std::path::Path::new(path)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ApprovalError::database_open(e.to_string()))?;
+        }
         let mut conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
@@ -39,6 +46,7 @@ impl SqliteApprovalStore {
 
     /// Opens an in-memory database (for testing).
     pub fn open_in_memory(config: ApprovalStoreConfig) -> Result<Self, ApprovalError> {
+        validate_config(&config)?;
         let mut conn = Connection::open_in_memory()
             .map_err(|e| ApprovalError::database_open(e.to_string()))?;
 
@@ -49,6 +57,14 @@ impl SqliteApprovalStore {
             conn: Mutex::new(conn),
             config,
         })
+    }
+
+    pub fn default_ttl_seconds(&self) -> u64 {
+        self.config.default_ttl_seconds
+    }
+
+    pub fn max_pending(&self) -> usize {
+        self.config.max_pending
     }
 
     fn configure_connection(conn: &mut Connection) -> Result<(), ApprovalError> {
@@ -62,13 +78,26 @@ impl SqliteApprovalStore {
     }
 
     fn run_migrations(conn: &Connection) -> Result<(), ApprovalError> {
-        let version: u64 = conn
+        let has_version_table: bool = conn
             .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'schema_version'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| ApprovalError::migration_failure(e.to_string()))?;
+        let version: u64 = if has_version_table {
+            conn.query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_version",
                 [],
                 |row| row.get(0),
             )
-            .unwrap_or(0);
+            .map_err(|e| ApprovalError::migration_failure(e.to_string()))?
+        } else {
+            0
+        };
 
         if version > CURRENT_SCHEMA_VERSION {
             return Err(ApprovalError::migration_failure(format!(
@@ -156,14 +185,13 @@ impl SqliteApprovalStore {
             .lock()
             .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
         let digest_hex = hex::encode(digest);
-        let count: u64 = conn
+        conn
             .query_row(
                 "SELECT COUNT(*) FROM approvals WHERE request_digest_hex = ?1 AND state IN ('pending', 'approved')",
                 params![digest_hex],
                 |row| row.get(0),
             )
-            .unwrap_or(0);
-        Ok(count)
+            .map_err(|e| ApprovalError::transaction_failure(e.to_string()))
     }
 
     /// Counts pending approvals.
@@ -172,14 +200,12 @@ impl SqliteApprovalStore {
             .conn
             .lock()
             .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
-        let count: u64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM approvals WHERE state = 'pending'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        Ok(count)
+        conn.query_row(
+            "SELECT COUNT(*) FROM approvals WHERE state = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| ApprovalError::transaction_failure(e.to_string()))
     }
 
     /// Loads an approval row by ID.
@@ -197,30 +223,34 @@ impl SqliteApprovalStore {
             )
             .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
 
-        let result = stmt
-            .query_row(params![approval_id], |row| {
-                Ok(ApprovalRow {
-                    approval_id: row.get(0)?,
-                    request_id: row.get(1)?,
-                    request_digest_hex: row.get(2)?,
-                    summary: row.get(3)?,
-                    operation: row.get(4)?,
-                    resource_kind: row.get(5)?,
-                    matched_rule_ids: row.get(6)?,
-                    created_at: row.get(7)?,
-                    expires_at: row.get(8)?,
-                    state: row.get(9)?,
-                    token_hash: row.get(10)?,
-                    actor_id: row.get(11)?,
-                    denial_reason: row.get(12)?,
-                    decision_at: row.get(13)?,
-                    consumed_at: row.get(14)?,
-                    audit_sequence: row.get(15)?,
-                })
+        stmt.query_row(params![approval_id], |row| {
+            Ok(ApprovalRow {
+                approval_id: row.get(0)?,
+                request_id: row.get(1)?,
+                request_digest_hex: row.get(2)?,
+                summary: row.get(3)?,
+                operation: row.get(4)?,
+                resource_kind: row.get(5)?,
+                matched_rule_ids: row.get(6)?,
+                created_at: row.get(7)?,
+                expires_at: row.get(8)?,
+                state: row.get(9)?,
+                token_hash: row.get(10)?,
+                actor_id: row.get(11)?,
+                denial_reason: row.get(12)?,
+                decision_at: row.get(13)?,
+                consumed_at: row.get(14)?,
+                audit_sequence: row.get(15)?,
             })
-            .ok();
-
-        Ok(result)
+        })
+        .map(Some)
+        .or_else(|error| {
+            if error == rusqlite::Error::QueryReturnedNoRows {
+                Ok(None)
+            } else {
+                Err(ApprovalError::transaction_failure(error.to_string()))
+            }
+        })
     }
 
     /// Atomically transitions a Pending approval to Approved and stores the token hash.
@@ -364,6 +394,21 @@ impl SqliteApprovalStore {
         Ok(())
     }
 
+    /// Returns whether any Pending or Approved approval has passed its expiry time.
+    pub fn has_overdue(&self, now: &str) -> Result<bool, ApprovalError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM approvals \
+             WHERE state IN ('pending', 'approved') AND expires_at < ?1)",
+            params![now],
+            |row| row.get(0),
+        )
+        .map_err(|e| ApprovalError::transaction_failure(e.to_string()))
+    }
+
     /// Expires overdue Pending or Approved approvals and returns the IDs that were expired.
     pub fn expire_overdue(&self, now: &str, audit_seq: u64) -> Result<Vec<String>, ApprovalError> {
         let mut conn = self
@@ -385,8 +430,8 @@ impl SqliteApprovalStore {
 
             stmt.query_map(params![now], |row| row.get(0))
                 .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?
-                .filter_map(|r| r.ok())
-                .collect()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?
         };
 
         if !ids.is_empty() {
@@ -501,8 +546,8 @@ impl SqliteApprovalStore {
                 })
             })
             .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
 
         Ok(rows)
     }
@@ -554,8 +599,8 @@ impl SqliteApprovalStore {
                 })
             })
             .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| ApprovalError::transaction_failure(e.to_string()))?;
 
         Ok(rows)
     }
@@ -579,42 +624,88 @@ impl SqliteApprovalStore {
     }
 }
 
-fn parse_state(s: &str) -> ApprovalState {
+fn validate_config(config: &ApprovalStoreConfig) -> Result<(), ApprovalError> {
+    if config.default_ttl_seconds == 0
+        || config.default_ttl_seconds > crate::types::MAX_APPROVAL_TTL_SECONDS
+    {
+        return Err(ApprovalError::invalid_request(format!(
+            "default approval TTL must be between 1 and {} seconds",
+            crate::types::MAX_APPROVAL_TTL_SECONDS
+        )));
+    }
+    if config.max_pending == 0 || config.max_pending > crate::types::MAX_PENDING_APPROVALS {
+        return Err(ApprovalError::invalid_request(format!(
+            "max pending approvals must be between 1 and {}",
+            crate::types::MAX_PENDING_APPROVALS
+        )));
+    }
+    Ok(())
+}
+
+fn parse_state(s: &str) -> Result<ApprovalState, ApprovalError> {
     match s {
-        "pending" => ApprovalState::Pending,
-        "approved" => ApprovalState::Approved,
-        "denied" => ApprovalState::Denied,
-        "expired" => ApprovalState::Expired,
-        "consumed" => ApprovalState::Consumed,
-        "cancelled" => ApprovalState::Cancelled,
-        _ => ApprovalState::Pending,
+        "pending" => Ok(ApprovalState::Pending),
+        "approved" => Ok(ApprovalState::Approved),
+        "denied" => Ok(ApprovalState::Denied),
+        "expired" => Ok(ApprovalState::Expired),
+        "consumed" => Ok(ApprovalState::Consumed),
+        "cancelled" => Ok(ApprovalState::Cancelled),
+        _ => Err(ApprovalError::database_corruption(format!(
+            "unknown approval state: {s}"
+        ))),
     }
 }
 
-pub(crate) fn row_to_record(row: ApprovalRow) -> ApprovalRecord {
-    let digest_bytes = hex::decode(&row.request_digest_hex).unwrap_or_default();
-    let mut digest = [0u8; 32];
-    if digest_bytes.len() == 32 {
-        digest.copy_from_slice(&digest_bytes);
+pub(crate) fn row_to_record(row: ApprovalRow) -> Result<ApprovalRecord, ApprovalError> {
+    let digest_bytes = hex::decode(&row.request_digest_hex)
+        .map_err(|e| ApprovalError::database_corruption(format!("invalid request digest: {e}")))?;
+    let digest: [u8; 32] = digest_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| ApprovalError::database_corruption("request digest is not 32 bytes"))?;
+
+    let rule_ids: Vec<String> = serde_json::from_str(&row.matched_rule_ids).map_err(|e| {
+        ApprovalError::database_corruption(format!("invalid matched rule IDs: {e}"))
+    })?;
+    for rule_id in &rule_ids {
+        kavach_core::ids::RuleId::new(rule_id).map_err(|e| {
+            ApprovalError::database_corruption(format!("invalid matched rule ID: {e}"))
+        })?;
     }
 
-    let rule_ids: Vec<String> = serde_json::from_str(&row.matched_rule_ids).unwrap_or_default();
-    let created = row.created_at.parse().unwrap_or_else(|_| Utc::now());
-    let expires = row.expires_at.parse().unwrap_or_else(|_| Utc::now());
+    let created = row.created_at.parse().map_err(|e| {
+        ApprovalError::database_corruption(format!("invalid created_at timestamp: {e}"))
+    })?;
+    let expires = row.expires_at.parse().map_err(|e| {
+        ApprovalError::database_corruption(format!("invalid expires_at timestamp: {e}"))
+    })?;
+    let approval_id = kavach_core::ids::ApprovalId::new(&row.approval_id).map_err(|e| {
+        ApprovalError::database_corruption(format!("invalid stored approval ID: {e}"))
+    })?;
+    let actor = row
+        .actor_id
+        .map(ApprovalActor::new)
+        .transpose()
+        .map_err(|e| ApprovalError::database_corruption(format!("invalid stored actor: {e}")))?;
+    let decision_at = row
+        .decision_at
+        .map(|value| {
+            value.parse::<DateTime<Utc>>().map_err(|e| {
+                ApprovalError::database_corruption(format!("invalid decision_at timestamp: {e}"))
+            })
+        })
+        .transpose()?;
+    let consumed_at = row
+        .consumed_at
+        .map(|value| {
+            value.parse::<DateTime<Utc>>().map_err(|e| {
+                ApprovalError::database_corruption(format!("invalid consumed_at timestamp: {e}"))
+            })
+        })
+        .transpose()?;
 
-    // Use a guaranteed-valid fallback ID when stored data is corrupted.
-    fn fallback_approval_id() -> kavach_core::ids::ApprovalId {
-        match kavach_core::ids::ApprovalId::new("unknown") {
-            Ok(id) => id,
-            Err(_) => {
-                panic!("'unknown' is always a valid approval id")
-            }
-        }
-    }
-
-    ApprovalRecord {
-        approval_id: kavach_core::ids::ApprovalId::new(&row.approval_id)
-            .unwrap_or_else(|_| fallback_approval_id()),
+    Ok(ApprovalRecord {
+        approval_id,
         request_id: row.request_id,
         request_digest: digest,
         summary: row.summary,
@@ -623,15 +714,11 @@ pub(crate) fn row_to_record(row: ApprovalRow) -> ApprovalRecord {
         matched_rule_ids: rule_ids,
         created_at: created,
         expires_at: expires,
-        state: parse_state(&row.state),
-        actor: row.actor_id.and_then(|id| ApprovalActor::new(id).ok()),
+        state: parse_state(&row.state)?,
+        actor,
         denial_reason: row.denial_reason,
-        decision_at: row
-            .decision_at
-            .and_then(|s| s.parse::<DateTime<Utc>>().ok()),
-        consumed_at: row
-            .consumed_at
-            .and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+        decision_at,
+        consumed_at,
         audit_sequence: row.audit_sequence,
-    }
+    })
 }

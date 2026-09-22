@@ -76,9 +76,6 @@ pub struct SecurityConfig {
     /// Whether to fail closed on errors (must be true).
     #[serde(default = "default_true")]
     pub fail_closed: bool,
-    /// Whether destructive operations require human approval.
-    #[serde(default = "default_true")]
-    pub approval_required_for_destructive_operations: bool,
 }
 
 /// Policy loading configuration.
@@ -100,15 +97,15 @@ pub struct AuditConfig {
     /// Whether to verify the audit chain on startup.
     #[serde(default = "default_true")]
     pub verify_on_startup: bool,
-    /// Maximum events before rotation.
-    #[serde(default = "default_rotation_max")]
-    pub rotation_max_events: u64,
 }
 
 /// Approval broker configuration.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalConfig {
+    /// Path to the SQLite approval database.
+    #[serde(default = "default_approval_database")]
+    pub database: PathBuf,
     /// Default time-to-live for approval requests (seconds).
     #[serde(default = "default_ttl")]
     pub default_ttl_seconds: u64,
@@ -172,12 +169,12 @@ fn default_audit_database() -> PathBuf {
     PathBuf::from("./data/kavach-audit.db")
 }
 
-fn default_rotation_max() -> u64 {
-    100_000
-}
-
 fn default_ttl() -> u64 {
     300
+}
+
+fn default_approval_database() -> PathBuf {
+    PathBuf::from("./data/kavach-approvals.db")
 }
 
 fn default_max_pending() -> usize {
@@ -227,7 +224,6 @@ struct TomlServer {
 struct TomlSecurity {
     workspace_root: Option<String>,
     fail_closed: Option<bool>,
-    approval_required_for_destructive_operations: Option<bool>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -241,12 +237,12 @@ struct TomlPolicy {
 struct TomlAudit {
     database: Option<String>,
     verify_on_startup: Option<bool>,
-    rotation_max_events: Option<u64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TomlApproval {
+    database: Option<String>,
     default_ttl_seconds: Option<u64>,
     max_pending: Option<u64>,
 }
@@ -330,7 +326,6 @@ impl Default for KavachConfig {
             security: SecurityConfig {
                 workspace_root: default_workspace_root(),
                 fail_closed: true,
-                approval_required_for_destructive_operations: true,
             },
             policy: PolicyConfig {
                 files: default_policy_files(),
@@ -338,9 +333,9 @@ impl Default for KavachConfig {
             audit: AuditConfig {
                 database: default_audit_database(),
                 verify_on_startup: true,
-                rotation_max_events: default_rotation_max(),
             },
             approval: ApprovalConfig {
+                database: default_approval_database(),
                 default_ttl_seconds: default_ttl(),
                 max_pending: default_max_pending(),
             },
@@ -387,12 +382,6 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<KavachConfig, ConfigError> 
     );
     cfg.security.fail_closed =
         merge_option(toml_cfg.security.fail_closed, cfg.security.fail_closed);
-    cfg.security.approval_required_for_destructive_operations = merge_option(
-        toml_cfg
-            .security
-            .approval_required_for_destructive_operations,
-        cfg.security.approval_required_for_destructive_operations,
-    );
 
     // Policy
     cfg.policy.files = merge_option(
@@ -412,20 +401,22 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<KavachConfig, ConfigError> 
         toml_cfg.audit.verify_on_startup,
         cfg.audit.verify_on_startup,
     );
-    cfg.audit.rotation_max_events = merge_option(
-        toml_cfg.audit.rotation_max_events,
-        cfg.audit.rotation_max_events,
-    );
 
     // Approval
+    cfg.approval.database = merge_option(
+        toml_cfg.approval.database.map(PathBuf::from),
+        cfg.approval.database,
+    );
     cfg.approval.default_ttl_seconds = merge_option(
         toml_cfg.approval.default_ttl_seconds,
         cfg.approval.default_ttl_seconds,
     );
-    cfg.approval.max_pending = merge_option(
-        toml_cfg.approval.max_pending.map(|v| v as usize),
-        cfg.approval.max_pending,
-    );
+    cfg.approval.max_pending = match toml_cfg.approval.max_pending {
+        Some(value) => usize::try_from(value).map_err(|_| {
+            ConfigError::Validation("approval.max_pending does not fit this platform".into())
+        })?,
+        None => cfg.approval.max_pending,
+    };
 
     // Redaction
     cfg.redaction.enabled = merge_option(toml_cfg.redaction.enabled, cfg.redaction.enabled);
@@ -477,6 +468,10 @@ fn apply_env_overrides(mut cfg: KavachConfig) -> Result<KavachConfig, ConfigErro
         cfg.approval.default_ttl_seconds,
         &format!("{ENV_PREFIX}APPROVAL_DEFAULT_TTL"),
     )?;
+    cfg.approval.database = env_override_pathbuf(
+        cfg.approval.database,
+        &format!("{ENV_PREFIX}APPROVAL_DATABASE"),
+    )?;
     cfg.approval.max_pending = env_override_usize(
         cfg.approval.max_pending,
         &format!("{ENV_PREFIX}APPROVAL_MAX_PENDING"),
@@ -499,6 +494,12 @@ fn validate(cfg: &KavachConfig) -> Result<(), ConfigError> {
     if !cfg.security.fail_closed {
         return Err(ConfigError::Validation(
             "security.fail_closed must be true; disabling fail-closed is rejected".into(),
+        ));
+    }
+
+    if !cfg.redaction.enabled {
+        return Err(ConfigError::Validation(
+            "redaction.enabled must be true for the gateway".into(),
         ));
     }
 
@@ -529,6 +530,22 @@ fn validate(cfg: &KavachConfig) -> Result<(), ConfigError> {
     if cfg.approval.default_ttl_seconds == 0 {
         return Err(ConfigError::Validation(
             "approval.default_ttl_seconds must be greater than 0".into(),
+        ));
+    }
+    if cfg.approval.default_ttl_seconds > 86_400 {
+        return Err(ConfigError::Validation(
+            "approval.default_ttl_seconds must not exceed 86400".into(),
+        ));
+    }
+    if cfg.approval.max_pending == 0 || cfg.approval.max_pending > 10_000 {
+        return Err(ConfigError::Validation(
+            "approval.max_pending must be between 1 and 10000".into(),
+        ));
+    }
+
+    if cfg.approval.database.as_os_str().is_empty() {
+        return Err(ConfigError::Validation(
+            "approval.database must not be empty".into(),
         ));
     }
 
@@ -587,9 +604,9 @@ files = ["./config/policy-a.toml", "./config/policy-b.toml"]
 
 [audit]
 database = "./data/audit.db"
-rotation_max_events = 50000
 
 [approval]
+database = "./data/approvals.db"
 default_ttl_seconds = 600
 max_pending = 500
 
@@ -610,7 +627,7 @@ format = "json"
         );
         assert_eq!(cfg.policy.files.len(), 2);
         assert_eq!(cfg.audit.database, PathBuf::from("./data/audit.db"));
-        assert_eq!(cfg.audit.rotation_max_events, 50000);
+        assert_eq!(cfg.approval.database, PathBuf::from("./data/approvals.db"));
         assert_eq!(cfg.approval.default_ttl_seconds, 600);
         assert_eq!(cfg.approval.max_pending, 500);
         assert_eq!(cfg.logging.level, "debug");

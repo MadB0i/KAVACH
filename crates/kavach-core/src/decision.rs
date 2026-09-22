@@ -119,6 +119,25 @@ pub struct ApprovalRequirements {
     pub summary: String,
 }
 
+/// Lightweight structured trace explaining *why* a rule matched or failed.
+///
+/// Additive-only: every field is optional/defaulted so previously serialized
+/// decisions still deserialize, and existing consumers that ignore the trace
+/// keep working. The future CLI (`kavach explain`) and dashboard consume this.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DecisionTrace {
+    /// Set when the built-in dangerous-invocation baseline fired instead of
+    /// normal rule evaluation. Carries the machine-readable baseline reason
+    /// (never argument payloads).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_triggered: Option<String>,
+    /// Distinct rule-condition dimensions that failed across evaluated rules
+    /// (e.g. `"executables"`, `"path_globs"`), bounded by the engine.
+    /// Empty when every evaluated rule matched or no rules were evaluated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_conditions: Vec<String>,
+}
+
 /// A finalized authorization decision for a single tool request.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AuthorizationDecision {
@@ -140,6 +159,10 @@ pub struct AuthorizationDecision {
     pub risk_score: Option<u8>,
     /// Optional approval requirements if the effect is [`DecisionEffect::RequireApproval`].
     pub approval: Option<ApprovalRequirements>,
+    /// Optional structured match/fail trace. `None` preserves the exact
+    /// pre-trace serialization for decisions that opt out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<DecisionTrace>,
 }
 
 impl AuthorizationDecision {
@@ -147,7 +170,9 @@ impl AuthorizationDecision {
     ///
     /// The eight parameters mirror the eight documented fields of
     /// [`AuthorizationDecision`]; splitting them now would be premature
-    /// abstraction for an immutable data record.
+    /// abstraction for an immutable data record. The additive `trace` field
+    /// defaults to `None`; use [`with_trace`](Self::with_trace) or
+    /// [`new_with_trace`](Self::new_with_trace) to attach one.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         effect: DecisionEffect,
@@ -170,6 +195,40 @@ impl AuthorizationDecision {
             request_id,
             risk_score,
             approval,
+            trace: None,
         }
+    }
+
+    /// Construct a decision with an attached [`DecisionTrace`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_trace(
+        effect: DecisionEffect,
+        reason: ReasonCode,
+        explanation: impl Into<String>,
+        matched_rule_ids: BTreeSet<RuleId>,
+        evaluated_at: SystemTime,
+        request_id: RequestId,
+        risk_score: Option<u8>,
+        approval: Option<ApprovalRequirements>,
+        trace: DecisionTrace,
+    ) -> Self {
+        let mut decision = Self::new(
+            effect,
+            reason,
+            explanation,
+            matched_rule_ids,
+            evaluated_at,
+            request_id,
+            risk_score,
+            approval,
+        );
+        decision.trace = Some(trace);
+        decision
+    }
+
+    /// Attach a [`DecisionTrace`] to this decision (builder style).
+    pub fn with_trace(mut self, trace: DecisionTrace) -> Self {
+        self.trace = Some(trace);
+        self
     }
 }

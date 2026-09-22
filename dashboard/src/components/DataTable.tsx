@@ -16,6 +16,7 @@ interface DataTableProps<T> {
   emptyTitle?: string;
   emptyDescription?: string;
   compact?: boolean;
+  rowLabel?: (row: T) => string;
 }
 
 export default function DataTable<T>({
@@ -26,6 +27,7 @@ export default function DataTable<T>({
   emptyTitle = 'No Data',
   emptyDescription = 'There are no records to display.',
   compact = false,
+  rowLabel,
 }: DataTableProps<T>) {
   if (data.length === 0) {
     return (
@@ -47,9 +49,9 @@ export default function DataTable<T>({
         </thead>
         <tbody>
           {data.map((row, idx) => (
-            <tr key={keyField(row, idx)}>
+            <tr key={keyField(row, idx)} aria-label={rowLabel?.(row)}>
               {columns.map((col) => (
-                <td key={col.key} className={col.className}>{col.render(row, idx)}</td>
+                <td key={col.key} className={col.className} data-label={col.header}>{col.render(row, idx)}</td>
               ))}
             </tr>
           ))}

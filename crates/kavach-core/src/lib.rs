@@ -27,9 +27,12 @@ pub mod ids;
 pub mod permit;
 pub mod request;
 pub mod resource;
+pub mod shell;
 pub mod subject;
 
-pub use decision::{ApprovalRequirements, AuthorizationDecision, DecisionEffect, ReasonCode};
+pub use decision::{
+    ApprovalRequirements, AuthorizationDecision, DecisionEffect, DecisionTrace, ReasonCode,
+};
 pub use digest::compute_request_digest;
 pub use error::{DomainError, DomainErrorKind, DomainValidationError, FieldPath};
 pub use ids::{AgentId, ApprovalId, MAX_ID_LEN, PolicyId, RequestId, RuleId, SessionId};
@@ -39,6 +42,10 @@ pub use resource::{
     CommandResource, MAX_IDENTIFIER_LEN, MAX_PATH_LEN, NetworkHost, NetworkPort, NetworkResource,
     NetworkScheme, NormalizedPath, PathError, PathErrorKind, RequestMetadata, Resource,
     ResourceKind,
+};
+pub use shell::{
+    ShellHazard, has_dangerous_shell_construct, has_substitution_hazard,
+    scan_dangerous_shell_constructs,
 };
 pub use subject::{AgentSubject, Capability, CapabilitySet, MAX_CAPABILITY_LEN, TrustLevel};
 

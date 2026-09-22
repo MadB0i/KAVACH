@@ -14,14 +14,26 @@ use crate::{
 pub async fn list_policies(
     State(state): State<Arc<GatewayState>>,
 ) -> Result<Json<serde_json::Value>, GatewayError> {
-    let _runtime = state
+    let runtime = state
         .runtime
         .read()
         .map_err(|_| GatewayError::internal("runtime lock"))?;
+    let policies: Vec<serde_json::Value> = runtime
+        .policy_summaries()
+        .into_iter()
+        .map(|policy| {
+            serde_json::json!({
+                "policy_id": policy.id,
+                "policy_name": policy.name,
+                "default_effect": format!("{:?}", policy.default_effect).to_lowercase(),
+                "rule_count": policy.rule_count,
+            })
+        })
+        .collect();
 
     Ok(Json(serde_json::json!({
         "request_id": null, "status": "success",
-        "data": [{ "policy_id": "runtime", "policy_name": "Runtime Policy", "source": "runtime", "rule_count": 0 }]
+        "data": policies,
     })))
 }
 

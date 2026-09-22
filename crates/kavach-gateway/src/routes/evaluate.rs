@@ -59,10 +59,17 @@ pub async fn evaluate(
             audit_event_id,
         },
         kavach_runtime::outcome::RuntimeOutcome::Permitted(outcome) => {
+            let request_id = outcome.request_id().to_string();
+            let permit_secret_hex = hex::encode(outcome.secret());
+            let permit = PermitDto::from(&outcome.permit);
+            state
+                .issued_permits
+                .register(outcome.permit)
+                .map_err(GatewayError::internal)?;
             EvaluateOutcomeDto::Permitted {
-                request_id: outcome.request_id().to_string(),
-                permit: PermitDto::from(&outcome.permit),
-                permit_secret_hex: hex::encode(outcome.secret()),
+                request_id,
+                permit,
+                permit_secret_hex,
             }
         }
     };

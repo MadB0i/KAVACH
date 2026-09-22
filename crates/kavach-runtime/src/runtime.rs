@@ -71,7 +71,7 @@ impl KavachRuntime {
 
         match decision.effect {
             DecisionEffect::Deny => {
-                let summary = self.sanitize_summary(&decision.explanation);
+                let summary = self.sanitize_summary(&decision.explanation)?;
                 let seq =
                     self.audit_decision(request, AuditEventCategory::DecisionDeny, &decision)?;
                 Ok(RuntimeOutcome::Denied {
@@ -83,11 +83,11 @@ impl KavachRuntime {
                 })
             }
             DecisionEffect::RequireApproval => {
-                let _digest = compute_request_digest(request);
+                let summary = self.sanitize_summary(&decision.explanation)?;
 
                 let approval_request = ApprovalRequest {
                     request: request.clone(),
-                    summary: self.sanitize_summary(&decision.explanation),
+                    summary: summary.clone(),
                     matched_rule_ids: matched_ids.iter().map(|id| id.to_string()).collect(),
                 };
 
@@ -96,12 +96,21 @@ impl KavachRuntime {
                     .request_approval(&approval_request, None)
                     .map_err(|e| RuntimeError::ApprovalFailure(e.to_string()))?;
 
-                let seq = self.audit_approval_requested(request, &pending)?;
+                let seq = self
+                    .broker
+                    .get_approval(&pending.approval_id)
+                    .map_err(|e| RuntimeError::ApprovalFailure(e.to_string()))?
+                    .audit_sequence
+                    .ok_or_else(|| {
+                        RuntimeError::AuditFailure(
+                            "approval request is missing its audit sequence".into(),
+                        )
+                    })?;
 
                 Ok(RuntimeOutcome::ApprovalRequired {
                     request_id,
                     approval_id: pending.approval_id,
-                    sanitized_summary: self.sanitize_summary(&decision.explanation),
+                    sanitized_summary: summary,
                     audit_event_id: seq,
                 })
             }
@@ -165,6 +174,11 @@ impl KavachRuntime {
         if permit.is_expired() {
             return Err(RuntimeError::PermitFailure("permit expired".into()));
         }
+        if permit.is_consumed() {
+            return Err(RuntimeError::PermitFailure(
+                "permit already consumed".into(),
+            ));
+        }
 
         // 3. Verify request digest
         let digest = compute_request_digest(request);
@@ -183,18 +197,13 @@ impl KavachRuntime {
             });
         }
 
-        // 5. Consume permit
-        if !permit.consume() {
-            return Err(RuntimeError::PermitFailure(
-                "permit already consumed".into(),
-            ));
-        }
-
-        // 6. Dispatch
+        // 5. Dispatch. The selected enforcement adapter performs the final
+        // request-bound verification and consumes the permit exactly once.
         let adapter_kind = AdapterRegistry::resolve_operation(request)?;
 
-        // 7. Audit execution started
-        let _ = self.audit_execution_started(request, adapter_kind);
+        // 6. Audit execution started before any side effect. Audit failures
+        // are security failures and must stop execution.
+        self.audit_execution_started(request, adapter_kind)?;
 
         let result = match adapter_kind {
             AdapterKind::Filesystem => {
@@ -204,9 +213,13 @@ impl KavachRuntime {
                         kavach_enforcement::FilesystemInput::WriteBytes(data)
                     }
                     _ => {
-                        return Err(RuntimeError::InvalidExecutionInput(
-                            "expected FilesystemWrite or None for filesystem operation".into(),
-                        ));
+                        return self.finish_failed_execution(
+                            request,
+                            adapter_kind,
+                            RuntimeError::InvalidExecutionInput(
+                                "expected FilesystemWrite or None for filesystem operation".into(),
+                            ),
+                        );
                     }
                 };
                 self.registry
@@ -219,9 +232,13 @@ impl KavachRuntime {
                 let cmd_input = match input {
                     ExecutionInput::Command(ci) => ci,
                     _ => {
-                        return Err(RuntimeError::InvalidExecutionInput(
-                            "expected CommandInput for command operation".into(),
-                        ));
+                        return self.finish_failed_execution(
+                            request,
+                            adapter_kind,
+                            RuntimeError::InvalidExecutionInput(
+                                "expected CommandInput for command operation".into(),
+                            ),
+                        );
                     }
                 };
                 self.registry
@@ -234,9 +251,13 @@ impl KavachRuntime {
                 let net_input = match input {
                     ExecutionInput::Network(ni) => ni,
                     _ => {
-                        return Err(RuntimeError::InvalidExecutionInput(
-                            "expected NetworkInput for network operation".into(),
-                        ));
+                        return self.finish_failed_execution(
+                            request,
+                            adapter_kind,
+                            RuntimeError::InvalidExecutionInput(
+                                "expected NetworkInput for network operation".into(),
+                            ),
+                        );
                     }
                 };
                 self.registry
@@ -247,26 +268,31 @@ impl KavachRuntime {
             }
         };
 
-        // 9-10. Redact and audit
+        // 7-8. Redact and audit. Returning unredacted output after a
+        // redaction error would leak sensitive data, so redaction fails closed.
         match result {
             Ok(exec_result) => {
                 let redacted = if self.config.redaction_enabled {
                     match &self.redactor {
-                        Some(r) => exec_result
-                            .redacted(r.as_ref())
-                            .unwrap_or_else(|_| exec_result.clone()),
+                        Some(r) => match exec_result.redacted(r.as_ref()) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                return self.finish_failed_execution(
+                                    request,
+                                    adapter_kind,
+                                    RuntimeError::RedactionFailure(error.to_string()),
+                                );
+                            }
+                        },
                         None => exec_result.clone(),
                     }
                 } else {
                     exec_result.clone()
                 };
-                let _ = self.audit_execution_result(request, adapter_kind, true);
+                self.audit_execution_result(request, adapter_kind, true)?;
                 Ok(redacted)
             }
-            Err(e) => {
-                let _ = self.audit_execution_result(request, adapter_kind, false);
-                Err(e)
-            }
+            Err(e) => self.finish_failed_execution(request, adapter_kind, e),
         }
     }
 
@@ -317,13 +343,25 @@ impl KavachRuntime {
         approval_id: &ApprovalId,
         token: &ApprovalToken,
     ) -> Result<PermittedOutcome, RuntimeError> {
+        // Verify request binding before consuming the one-time token. A
+        // mismatched request must not be able to destroy a valid approval.
+        let digest = compute_request_digest(request);
+        let approval = self
+            .broker
+            .get_approval(approval_id)
+            .map_err(|e| RuntimeError::ApprovalFailure(e.to_string()))?;
+        if !constant_time_eq::constant_time_eq(&digest, &approval.request_digest) {
+            return Err(RuntimeError::PermitFailure(
+                "approval request digest does not match presented request".into(),
+            ));
+        }
+
         let consumed: ConsumedApproval = self
             .broker
             .consume(approval_id, token)
             .map_err(|e| RuntimeError::ApprovalFailure(e.to_string()))?;
 
-        // Verify digest matches the presented request.
-        let digest = compute_request_digest(request);
+        // Re-verify the digest returned by the transactional consume.
         if !constant_time_eq::constant_time_eq(&digest, &consumed.request_digest) {
             return Err(RuntimeError::PermitFailure(
                 "approval request digest does not match presented request".into(),
@@ -337,8 +375,14 @@ impl KavachRuntime {
         let matched_ids: Vec<RuleId> = consumed
             .matched_rule_ids
             .iter()
-            .filter_map(|id| RuleId::new(id).ok())
-            .collect();
+            .map(|id| {
+                RuleId::new(id).map_err(|error| {
+                    RuntimeError::ApprovalFailure(format!(
+                        "approval returned an invalid matched rule ID: {error}"
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
 
         let permit = ExecutionPermit::new(
             &secret,
@@ -361,22 +405,36 @@ impl KavachRuntime {
         Ok(secret)
     }
 
-    fn sanitize_summary(&self, summary: &str) -> String {
+    fn finish_failed_execution<T>(
+        &self,
+        request: &ToolRequest,
+        adapter_kind: AdapterKind,
+        error: RuntimeError,
+    ) -> Result<T, RuntimeError> {
+        self.audit_execution_result(request, adapter_kind, false)?;
+        Err(error)
+    }
+
+    fn sanitize_summary(&self, summary: &str) -> Result<String, RuntimeError> {
         let s = if self.config.redaction_enabled {
             match &self.redactor {
                 Some(redactor) => redactor
                     .redact_text(summary)
                     .map(|r| r.redacted)
-                    .unwrap_or_else(|_| summary.to_string()),
+                    .map_err(|e| RuntimeError::RedactionFailure(e.to_string()))?,
                 None => summary.to_string(),
             }
         } else {
             summary.to_string()
         };
         if s.len() > self.config.max_sanitized_summary_length {
-            s[..self.config.max_sanitized_summary_length].to_string()
+            let mut end = self.config.max_sanitized_summary_length;
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            Ok(s[..end].to_string())
         } else {
-            s
+            Ok(s)
         }
     }
 
@@ -388,20 +446,28 @@ impl KavachRuntime {
         reason_code: Option<&str>,
         matched_rule_ids: &[RuleId],
         metadata: BTreeMap<String, String>,
-    ) -> AuditAppendInput {
-        let resource_kind = format!("{:?}", request.resource.kind());
-        AuditAppendInput {
+    ) -> Result<AuditAppendInput, RuntimeError> {
+        let resource_kind = request.resource.kind().to_string();
+        let resource_summary = match &request.resource {
+            kavach_core::resource::Resource::File { path }
+            | kavach_core::resource::Resource::Directory { path } => path.normalized().to_string(),
+            kavach_core::resource::Resource::Secret { identifier }
+            | kavach_core::resource::Resource::ExternalTool { identifier } => identifier.clone(),
+            kavach_core::resource::Resource::Unknown => "unknown".to_string(),
+            resource => format!("{resource:?}"),
+        };
+        Ok(AuditAppendInput {
             category,
             request_id: Some(request.request_id.to_string()),
             agent_id: Some(request.subject.agent_id.to_string()),
-            operation: Some(format!("{:?}", request.operation)),
+            operation: Some(request.operation.as_str().to_string()),
             resource_kind: Some(resource_kind),
-            resource_summary: Some(self.sanitize_summary(&format!("{:?}", request.resource))),
+            resource_summary: Some(self.sanitize_summary(&resource_summary)?),
             decision: decision.map(|s| s.to_string()),
             reason_code: reason_code.map(|s| s.to_string()),
             matched_rule_ids: matched_rule_ids.iter().map(|id| id.to_string()).collect(),
             metadata,
-        }
+        })
     }
 
     fn audit_decision(
@@ -417,25 +483,7 @@ impl KavachRuntime {
             Some(decision.reason.as_str()),
             &decision.matched_rule_ids,
             BTreeMap::new(),
-        );
-        self.append_audit(input)
-    }
-
-    fn audit_approval_requested(
-        &self,
-        request: &ToolRequest,
-        pending: &kavach_approval::PendingApproval,
-    ) -> Result<u64, RuntimeError> {
-        let mut metadata = BTreeMap::new();
-        metadata.insert("approval_id".into(), pending.approval_id.to_string());
-        let input = self.make_audit_input(
-            request,
-            AuditEventCategory::ApprovalRequested,
-            None,
-            None,
-            &[],
-            metadata,
-        );
+        )?;
         self.append_audit(input)
     }
 
@@ -453,7 +501,7 @@ impl KavachRuntime {
             None,
             &[],
             metadata,
-        );
+        )?;
         self.append_audit(input)
     }
 
@@ -471,7 +519,7 @@ impl KavachRuntime {
         let mut metadata = BTreeMap::new();
         metadata.insert("adapter".into(), format!("{kind:?}"));
         metadata.insert("succeeded".into(), succeeded.to_string());
-        let input = self.make_audit_input(request, category, None, None, &[], metadata);
+        let input = self.make_audit_input(request, category, None, None, &[], metadata)?;
         self.append_audit(input)
     }
 
@@ -520,6 +568,11 @@ impl KavachRuntime {
     pub fn config(&self) -> &RuntimeConfig {
         &self.config
     }
+
+    /// Return metadata for the active policy snapshot.
+    pub fn policy_summaries(&self) -> Vec<kavach_policy::PolicySummary> {
+        self.engine.summaries()
+    }
 }
 
 /// Check whether `actual` scope is sufficient for the `required` scope.
@@ -546,6 +599,7 @@ pub struct RuntimeBuilder {
     policies: Vec<kavach_policy::Policy>,
     workspace_root: Option<PathBuf>,
     approval_db_path: Option<String>,
+    approval_store_config: kavach_approval::ApprovalStoreConfig,
     audit_db_path: Option<String>,
     redactor: Option<Arc<dyn Redactor>>,
 }
@@ -580,6 +634,12 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Configure approval expiry and queue limits.
+    pub fn with_approval_config(mut self, config: kavach_approval::ApprovalStoreConfig) -> Self {
+        self.approval_store_config = config;
+        self
+    }
+
     /// Set the audit database path (defaults to in-memory for tests).
     pub fn with_audit_db(mut self, path: String) -> Self {
         self.audit_db_path = Some(path);
@@ -594,35 +654,45 @@ impl RuntimeBuilder {
 
     /// Build the [`KavachRuntime`].
     pub fn build(self) -> Result<KavachRuntime, RuntimeError> {
+        let redactor = if self.config.redaction_enabled {
+            Some(self.redactor.unwrap_or_else(|| {
+                Arc::new(kavach_redaction::CompositeRedactor::builder().build())
+            }))
+        } else {
+            self.redactor
+        };
+
         let engine = PolicyEngine::new(self.policies)
             .map_err(|e| RuntimeError::PolicyFailure(e.to_string()))?;
 
         let workspace_root = self.workspace_root.unwrap_or_else(|| PathBuf::from("."));
         let registry = AdapterRegistry::new_test(workspace_root)?;
 
-        let audit_store = match self.audit_db_path {
-            Some(ref path) => AuditStoreBuilder::new()
-                .open(path)
-                .map_err(|e| RuntimeError::ConfigurationFailure(e.to_string()))?,
-            None => AuditStoreBuilder::new()
-                .open_in_memory()
-                .map_err(|e| RuntimeError::ConfigurationFailure(e.to_string()))?,
+        let audit_builder = || {
+            let builder = AuditStoreBuilder::new();
+            match &redactor {
+                Some(redactor) => builder.with_redactor(Arc::clone(redactor)),
+                None => builder,
+            }
         };
-
-        let approval_audit = AuditStoreBuilder::new()
-            .open_in_memory()
-            .map_err(|e| RuntimeError::ConfigurationFailure(e.to_string()))?;
+        let audit_store = match self.audit_db_path {
+            Some(ref path) => audit_builder().open(path),
+            None => audit_builder().open_in_memory(),
+        };
+        let audit_store =
+            audit_store.map_err(|e| RuntimeError::ConfigurationFailure(e.to_string()))?;
+        let approval_audit = audit_store.clone();
 
         let broker: Arc<dyn ApprovalBroker> = match self.approval_db_path {
             Some(ref path) => open_approval_broker(
                 path,
-                kavach_approval::ApprovalStoreConfig::default(),
+                self.approval_store_config.clone(),
                 approval_audit,
                 Box::new(kavach_approval::RealClock),
             )
             .map_err(|e| RuntimeError::ApprovalFailure(e.to_string()))?,
             None => open_approval_broker_in_memory(
-                kavach_approval::ApprovalStoreConfig::default(),
+                self.approval_store_config,
                 approval_audit,
                 Box::new(kavach_approval::RealClock),
             )
@@ -635,13 +705,13 @@ impl RuntimeBuilder {
             registry,
             broker,
             audit_store,
-            redactor: self.redactor,
+            redactor,
         })
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use kavach_core::ids::{AgentId, RequestId, SessionId};
@@ -848,7 +918,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(permitted.permit.request_id, request_id);
+        assert_eq!(
+            permitted.permit.matched_rule_ids,
+            vec![RuleId::new("require-approval-rule").unwrap()],
+            "approval-derived permits must retain the policy rule binding"
+        );
         assert!(*permitted.secret() != [0u8; 32]);
+
+        let events = runtime.audit_store().events_after_sequence(0, 10).unwrap();
+        let categories: Vec<_> = events.iter().map(|event| event.category).collect();
+        assert_eq!(
+            categories,
+            vec![
+                kavach_audit::AuditEventCategory::ApprovalRequested,
+                kavach_audit::AuditEventCategory::ApprovalApproved,
+                kavach_audit::AuditEventCategory::ApprovalConsumed,
+            ],
+            "approval transitions must use the runtime's dashboard-visible audit chain"
+        );
     }
 
     #[test]
@@ -911,6 +998,11 @@ mod tests {
             .consume_approval(&modified_req, &approval_id, &token)
             .unwrap_err();
         assert!(matches!(err, RuntimeError::PermitFailure(_)));
+
+        let permitted = runtime
+            .consume_approval(&req, &approval_id, &token)
+            .expect("a mismatched request must not consume the valid approval token");
+        assert_eq!(permitted.request_id(), &req.request_id);
     }
 
     #[test]
@@ -1328,6 +1420,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ws = tmp.path().join("workspace");
         std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("exec-test.txt"), b"verified runtime read").unwrap();
         let runtime = build_runtime(vec![allow_read_policy()], &tmp);
         let req = ToolRequest::new(
             RequestId::new("req-read-exec").unwrap(),
@@ -1338,16 +1431,38 @@ mod tests {
             .trust_level(TrustLevel::Standard)
             .build(),
             Operation::FileRead { max_bytes: None },
-            Resource::file("/workspace/exec-test.txt").unwrap(),
+            Resource::file("exec-test.txt").unwrap(),
             RequestContext::new(None, None, None, None, false).unwrap(),
         );
         let eval = runtime.evaluate(&req).unwrap();
         if let RuntimeOutcome::Permitted(p) = eval {
             let secret = *p.secret();
             let mut permit = p.permit;
-            let result = runtime.execute(&req, &mut permit, &secret, ExecutionInput::None);
-            // File doesn't exist yet; expect filesystem error
-            assert!(result.is_err());
+            let result = runtime
+                .execute(&req, &mut permit, &secret, ExecutionInput::None)
+                .unwrap();
+            match result {
+                ExecutionResult::Filesystem(kavach_enforcement::FilesystemOutcome::FileRead {
+                    bytes,
+                    bytes_read,
+                }) => {
+                    assert_eq!(bytes, b"verified runtime read");
+                    assert_eq!(bytes_read, 21);
+                }
+                other => panic!("expected filesystem read result, got {other:?}"),
+            }
+            assert!(permit.is_consumed());
+
+            let events = runtime.audit_store().events_after_sequence(0, 10).unwrap();
+            let categories: Vec<_> = events.iter().map(|event| event.category).collect();
+            assert_eq!(
+                categories,
+                vec![
+                    kavach_audit::AuditEventCategory::DecisionAllow,
+                    kavach_audit::AuditEventCategory::ExecutionStarted,
+                    kavach_audit::AuditEventCategory::ExecutionSucceeded,
+                ]
+            );
         } else {
             panic!("expected Permitted");
         }

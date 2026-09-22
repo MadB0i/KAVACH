@@ -8,6 +8,7 @@ import EmptyState from '../components/EmptyState';
 import LoadingState from '../components/LoadingState';
 import ErrorState from '../components/ErrorState';
 import StatusBadge from '../components/StatusBadge';
+import { FileCheck2 } from 'lucide-react';
 
 export default function AuditVerification() {
   const [result, setResult] = useState<AuditVerifyResult | null>(null);
@@ -39,6 +40,8 @@ export default function AuditVerification() {
       <div className="page">
         <PageHeader
           title="Audit Chain Verification"
+          icon={FileCheck2}
+          eyebrow="Cryptographic assurance"
           subtitle="Verify the cryptographic integrity of the audit event chain"
         />
         <div className="empty-state" style={{ padding: '64px 20px' }}>
@@ -65,6 +68,8 @@ export default function AuditVerification() {
     <div className="page">
       <PageHeader
         title="Audit Chain Verification"
+        icon={FileCheck2}
+        eyebrow="Cryptographic assurance"
         subtitle="Verify the cryptographic integrity of the audit event chain"
         actions={
           <button
@@ -94,22 +99,22 @@ export default function AuditVerification() {
             <div className="verify-summary__stats">
               <div className="verify-summary__stat">
                 <span className="verify-summary__stat-label">Events</span>
-                <span className="verify-summary__stat-value">{result.event_count ?? '\u2014'}</span>
+                <span className="verify-summary__stat-value">{result.event_count ?? 'Unavailable'}</span>
               </div>
               <div className="verify-summary__stat">
                 <span className="verify-summary__stat-label">Verified Range</span>
                 <span className="verify-summary__stat-value">
-                  {result.verified_to !== undefined ? `1 \u2013 ${result.verified_to}` : '\u2014'}
+                  {result.verified_to !== undefined ? `1 \u2013 ${result.verified_to}` : 'Unavailable'}
                 </span>
               </div>
               <div className="verify-summary__stat">
                 <span className="verify-summary__stat-label">Last Verification</span>
-                <span className="verify-summary__stat-value">{verifyTime || '\u2014'}</span>
+                <span className="verify-summary__stat-value">{verifyTime || 'Not run'}</span>
               </div>
               <div className="verify-summary__stat">
                 <span className="verify-summary__stat-label">Duration</span>
                 <span className="verify-summary__stat-value">
-                  {verifyDuration !== null ? `${verifyDuration}ms` : '\u2014'}
+                  {verifyDuration !== null ? `${verifyDuration}ms` : 'Unavailable'}
                 </span>
               </div>
             </div>

@@ -66,6 +66,26 @@ fn allow_all_policy() -> kavach_policy::Policy {
     }
 }
 
+fn approval_policy() -> kavach_policy::Policy {
+    use kavach_core::ids::{PolicyId, RuleId};
+    use kavach_policy::model::{Effect, RuleConditions};
+    kavach_policy::Policy {
+        id: PolicyId::new("approval-policy").unwrap(),
+        name: "approval-policy".into(),
+        description: "".into(),
+        default_effect: kavach_policy::DefaultEffect::Deny,
+        rules: vec![kavach_policy::Rule {
+            id: RuleId::new("rule-require-approval").unwrap(),
+            description: "".into(),
+            effect: Effect::RequireApproval,
+            conditions: RuleConditions {
+                operations: vec!["file_read".into()],
+                ..Default::default()
+            },
+        }],
+    }
+}
+
 fn test_runtime_with_policies(
     policies: Vec<kavach_policy::Policy>,
 ) -> (kavach_runtime::runtime::KavachRuntime, TempDir) {
@@ -97,7 +117,13 @@ fn test_runtime() -> (kavach_runtime::runtime::KavachRuntime, TempDir) {
 }
 
 fn test_state() -> (Arc<GatewayState>, TempDir, String) {
-    let (rt, dir) = test_runtime();
+    test_state_with_policies(vec![allow_all_policy()])
+}
+
+fn test_state_with_policies(
+    policies: Vec<kavach_policy::Policy>,
+) -> (Arc<GatewayState>, TempDir, String) {
+    let (rt, dir) = test_runtime_with_policies(policies);
     let (token, hex_str) = GatewayToken::generate();
     let cfg = GatewayConfig::default();
     let state = Arc::new(GatewayState {
@@ -109,6 +135,9 @@ fn test_state() -> (Arc<GatewayState>, TempDir, String) {
             cfg.rate_limit_per_second,
             cfg.rate_limit_burst,
         ),
+        issued_permits: crate::state::IssuedPermitRegistry::new(),
+        approval_tokens: crate::state::ApprovalTokenRegistry::new(),
+        started_at: std::time::Instant::now(),
     });
     (state, dir, hex_str)
 }
@@ -128,16 +157,20 @@ fn test_api_router(state: Arc<GatewayState>) -> Router {
         .route("/requests/execute", post(crate::routes::execute::execute))
         .route("/approvals", get(crate::routes::approvals::list_approvals))
         .route(
-            "/approvals/{id}",
+            "/approvals/:id",
             get(crate::routes::approvals::get_approval),
         )
         .route(
-            "/approvals/{id}/approve",
+            "/approvals/:id/approve",
             post(crate::routes::approvals::approve_approval),
         )
         .route(
-            "/approvals/{id}/deny",
+            "/approvals/:id/deny",
             post(crate::routes::approvals::deny_approval),
+        )
+        .route(
+            "/approvals/:id/consume",
+            post(crate::routes::approvals::consume_approval),
         )
         .route("/audit/events", get(crate::routes::audit::list_events))
         .route("/audit/verify", post(crate::routes::audit::verify_chain))
@@ -477,7 +510,8 @@ async fn health_returns_200() {
     assert_eq!(res.status(), StatusCode::OK);
 
     let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
-    assert_eq!(body["status"], "ok");
+    assert_eq!(body["status"], "success");
+    assert_eq!(body["data"]["status"], "ok");
 }
 
 #[tokio::test]
@@ -498,9 +532,10 @@ async fn ready_returns_200_when_healthy() {
     assert_eq!(res.status(), StatusCode::OK);
 
     let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
-    assert_eq!(body["status"], "ok");
-    assert_eq!(body["audit_available"], true);
-    assert_eq!(body["approval_available"], true);
+    assert_eq!(body["status"], "success");
+    assert_eq!(body["data"]["ready"], true);
+    assert_eq!(body["data"]["audit_store"], "ready");
+    assert_eq!(body["data"]["approval_store"], "ready");
 }
 
 #[tokio::test]
@@ -540,8 +575,8 @@ async fn api_status_returns_200_with_auth() {
     assert_eq!(res.status(), StatusCode::OK);
 
     let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
-    assert_eq!(body["service"], "kavach-gateway");
-    assert!(body["version"].is_string());
+    assert_eq!(body["data"]["service"], "kavach-gateway");
+    assert!(body["data"]["version"].is_string());
 }
 
 // ── Auth Middleware Tests ────────────────────────────────────────────────
@@ -757,6 +792,176 @@ async fn deny_nonexistent_approval_returns_404() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn approval_route_is_request_bound_secret_safe_and_executable() {
+    let (state, dir, token_hex) = test_state_with_policies(vec![approval_policy()]);
+    std::fs::write(
+        dir.path().join("workspace").join("approved.txt"),
+        b"approved execution",
+    )
+    .unwrap();
+    let request = ToolRequest::new(
+        RequestId::new("approval-real-route").unwrap(),
+        AgentSubjectBuilder::new(
+            AgentId::new("approval-agent").unwrap(),
+            SessionId::new("approval-session").unwrap(),
+        )
+        .trust_level(TrustLevel::Standard)
+        .build(),
+        Operation::FileRead { max_bytes: None },
+        Resource::file("approved.txt").unwrap(),
+        kavach_core::request::RequestContext::new(None, None, None, None, false).unwrap(),
+    );
+    let app = test_api_router(Arc::clone(&state));
+
+    let evaluate = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/requests/evaluate")
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "request": request.clone() })).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evaluate.status(), StatusCode::OK);
+    let evaluate_body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(evaluate).await).unwrap();
+    let approval_id = evaluate_body["data"]["approval_required"]["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let approve = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/approvals/{approval_id}/approve"))
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"actor":"test-operator"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approve.status(), StatusCode::OK);
+    let approve_body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(approve).await).unwrap();
+    assert_eq!(approve_body["data"]["outcome"], "approved");
+    assert!(
+        approve_body["data"].get("token").is_none(),
+        "approval token material must never be serialized"
+    );
+
+    let mut mismatched = request.clone();
+    mismatched.request_id = RequestId::new("approval-mismatch").unwrap();
+    let mismatch = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/approvals/{approval_id}/consume"))
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "request": mismatched })).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mismatch.status(), StatusCode::BAD_REQUEST);
+
+    let consume = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/approvals/{approval_id}/consume"))
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "request": request.clone() })).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(consume.status(), StatusCode::OK);
+    let consume_body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(consume).await).unwrap();
+    let permitted = &consume_body["data"]["permitted"];
+    assert_eq!(
+        permitted["permit"]["matched_rule_ids"],
+        serde_json::json!(["rule-require-approval"]),
+        "gateway approval exchange must preserve matched policy rules"
+    );
+
+    let execute = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/requests/execute")
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "request": request.clone(),
+                        "permit": permitted["permit"],
+                        "permit_secret_hex": permitted["permit_secret_hex"],
+                        "input": "none",
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(execute.status(), StatusCode::OK);
+
+    let replay = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/approvals/{approval_id}/consume"))
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "request": request })).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(replay.status(), StatusCode::OK);
+
+    let runtime = state.runtime.read().unwrap();
+    let categories: Vec<_> = runtime
+        .audit_store()
+        .events_after_sequence(0, 10)
+        .unwrap()
+        .into_iter()
+        .map(|event| event.category)
+        .collect();
+    assert_eq!(
+        categories,
+        vec![
+            kavach_audit::AuditEventCategory::ApprovalRequested,
+            kavach_audit::AuditEventCategory::ApprovalApproved,
+            kavach_audit::AuditEventCategory::ApprovalConsumed,
+            kavach_audit::AuditEventCategory::ExecutionStarted,
+            kavach_audit::AuditEventCategory::ExecutionSucceeded,
+        ]
+    );
 }
 
 // ── Audit Route Tests ────────────────────────────────────────────────────
@@ -1041,6 +1246,9 @@ fn test_body_limit_state(limit: usize) -> (Arc<GatewayState>, TempDir, String) {
             cfg.rate_limit_per_second,
             cfg.rate_limit_burst,
         ),
+        issued_permits: crate::state::IssuedPermitRegistry::new(),
+        approval_tokens: crate::state::ApprovalTokenRegistry::new(),
+        started_at: std::time::Instant::now(),
     });
     (state, dir, hex_str)
 }
@@ -1187,6 +1395,174 @@ async fn invalid_reload_preserves_previous_policy() {
 // ── Execute Endpoint Tests ──────────────────────────────────────────────
 
 #[tokio::test]
+async fn evaluate_then_execute_uses_server_owned_permit_and_rejects_replay() {
+    let (state, dir, token_hex) = test_state();
+    std::fs::write(
+        dir.path().join("workspace").join("test.txt"),
+        b"gateway execution",
+    )
+    .unwrap();
+    let request = ToolRequest::new(
+        RequestId::new("exec-real-route").unwrap(),
+        AgentSubjectBuilder::new(
+            AgentId::new("agent-route").unwrap(),
+            SessionId::new("session-route").unwrap(),
+        )
+        .trust_level(TrustLevel::Standard)
+        .build(),
+        Operation::FileRead { max_bytes: None },
+        Resource::file("test.txt").unwrap(),
+        kavach_core::request::RequestContext::new(None, None, None, None, false).unwrap(),
+    );
+    let app = test_api_router(Arc::clone(&state));
+    let evaluate_body = serde_json::json!({ "request": request.clone() });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/requests/evaluate")
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&evaluate_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let evaluated: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let permitted = &evaluated["data"]["permitted"];
+    let mut permit = permitted["permit"].clone();
+
+    // Every field except the registry key is deliberately forged. Execution
+    // must use the original permit retained by the gateway.
+    permit["request_id"] = serde_json::json!("forged-request");
+    permit["scope"] = serde_json::json!("NetworkRequest");
+    permit["request_digest"] = serde_json::json!("00".repeat(32));
+    permit["consumed"] = serde_json::json!(true);
+    let execute_body = serde_json::json!({
+        "request": request.clone(),
+        "permit": permit.clone(),
+        "permit_secret_hex": permitted["permit_secret_hex"],
+        "input": "none",
+    });
+
+    let wrong_secret_body = serde_json::json!({
+        "request": request,
+        "permit": permit,
+        "permit_secret_hex": "00".repeat(32),
+        "input": "none",
+    });
+    let wrong_secret = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/requests/execute")
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&wrong_secret_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_secret.status(), StatusCode::BAD_REQUEST);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/requests/execute")
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&execute_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "an invalid presentation must not destroy the legitimate permit"
+    );
+
+    let replay = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/requests/execute")
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&execute_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+
+    let runtime = state.runtime.read().unwrap();
+    let categories: Vec<_> = runtime
+        .audit_store()
+        .events_after_sequence(0, 10)
+        .unwrap()
+        .into_iter()
+        .map(|event| event.category)
+        .collect();
+    assert_eq!(
+        categories,
+        vec![
+            kavach_audit::AuditEventCategory::DecisionAllow,
+            kavach_audit::AuditEventCategory::ExecutionStarted,
+            kavach_audit::AuditEventCategory::ExecutionSucceeded,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn execute_rejects_a_valid_but_unregistered_permit() {
+    let (state, _dir, token_hex) = test_state();
+    let request = make_file_read_request("exec-unregistered");
+    let outcome = {
+        let runtime = state.runtime.read().unwrap();
+        runtime.evaluate(&request).unwrap()
+    };
+    let permitted = match outcome {
+        kavach_runtime::outcome::RuntimeOutcome::Permitted(permitted) => permitted,
+        other => panic!("expected Permitted, got {other:?}"),
+    };
+    let body = serde_json::json!({
+        "request": request,
+        "permit": PermitDto::from(&permitted.permit),
+        "permit_secret_hex": hex::encode(permitted.secret()),
+        "input": "none",
+    });
+    let app = test_api_router(state);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/requests/execute")
+                .method(Method::POST)
+                .header("Authorization", bearer_header(&token_hex))
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
+    assert_eq!(body["error"]["code"], "KAVACH_INVALID_REQUEST");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not issued by this gateway")
+    );
+}
+
+#[tokio::test]
 async fn execute_with_consumed_permit_detected() {
     // Test permit single-use semantics directly. The execute endpoint
     // calls KavachRuntime which enforces permit consumption.
@@ -1283,6 +1659,33 @@ fn loopback_bind_always_allowed() {
 fn ipv6_loopback_allowed_by_default() {
     let result = crate::server::validate_bind("[::1]:7421", false);
     assert!(result.is_ok(), "IPv6 loopback should be allowed");
+}
+
+#[tokio::test]
+async fn gateway_startup_requires_operator_supplied_token() {
+    let (runtime, _dir) = test_runtime();
+    let error = crate::GatewayBuilder::new()
+        .with_runtime(runtime)
+        .start()
+        .await
+        .expect_err("startup without a token must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("authentication token is required")
+    );
+}
+
+#[tokio::test]
+async fn gateway_startup_rejects_non_exact_token_length() {
+    let (runtime, _dir) = test_runtime();
+    let error = crate::GatewayBuilder::new()
+        .with_runtime(runtime)
+        .with_auth_token_hex(Some("a".repeat(63)))
+        .start()
+        .await
+        .expect_err("startup with a non-64-character token must fail closed");
+    assert!(error.to_string().contains("64 hexadecimal characters"));
 }
 
 #[test]

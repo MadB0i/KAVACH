@@ -6,3 +6,4 @@ pub mod mcp;
 pub mod policy;
 pub mod request;
 pub mod serve;
+pub mod setup;

@@ -2,7 +2,9 @@
 //!
 //! Supports one [Policy] per TOML document.
 
-use crate::model::{DefaultEffect, Effect, Policy, PolicyValidationError, Rule, RuleConditions};
+use crate::model::{
+    ArgumentRules, DefaultEffect, Effect, Policy, PolicyValidationError, Rule, RuleConditions,
+};
 use kavach_core::ids::{PolicyId, RuleId};
 use kavach_core::resource::ResourceKind;
 use kavach_core::subject::TrustLevel;
@@ -85,6 +87,17 @@ struct TomlRuleConditions {
     secret_identifiers: Option<Vec<String>>,
     tool_identifiers: Option<Vec<String>>,
     network_ports: Option<Vec<u16>>,
+    #[serde(default)]
+    argument_rules: Option<TomlArgumentRules>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct TomlArgumentRules {
+    #[serde(default)]
+    deny_if_matches: Option<Vec<String>>,
+    #[serde(default)]
+    require_match: Option<Vec<String>>,
 }
 
 /// Load a [Policy] from a TOML file at the given path.
@@ -147,6 +160,10 @@ fn convert(doc: TomlDocument) -> Result<Policy, PolicyLoadError> {
                 secret_identifiers: c.secret_identifiers.clone(),
                 tool_identifiers: c.tool_identifiers.clone(),
                 network_ports: c.network_ports.clone(),
+                argument_rules: c.argument_rules.as_ref().map(|a| ArgumentRules {
+                    deny_if_matches: a.deny_if_matches.clone(),
+                    require_match: a.require_match.clone(),
+                }),
             },
             None => RuleConditions::default(),
         };
@@ -941,6 +958,60 @@ executables = ["kubectl", "docker"]
             policy.rules[0].conditions.executables,
             Some(vec!["kubectl".to_string(), "docker".to_string()])
         );
+    }
+
+    #[test]
+    fn parse_argument_rules() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "arg-policy"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["command_execute"]
+executables = ["git"]
+
+[rules.conditions.argument_rules]
+deny_if_matches = ["--hard"]
+require_match = ["reset"]
+"#;
+        let policy = load_policy_from_str(toml).unwrap();
+        let rules = policy.rules[0].conditions.argument_rules.as_ref().unwrap();
+        assert_eq!(rules.deny_if_matches, Some(vec!["--hard".to_string()]));
+        assert_eq!(rules.require_match, Some(vec!["reset".to_string()]));
+    }
+
+    #[test]
+    fn reject_empty_argument_rules_toml() {
+        let toml = r#"
+schema_version = 1
+
+[policy]
+id = "test"
+default_effect = "deny"
+
+[[rules]]
+id = "r1"
+effect = "allow"
+
+[rules.conditions]
+operations = ["command_execute"]
+executables = ["git"]
+
+[rules.conditions.argument_rules]
+"#;
+        match load_policy_from_str(toml) {
+            Err(PolicyLoadError::Validation(PolicyValidationError::EmptyArgumentRules(id))) => {
+                assert_eq!(id.as_str(), "r1");
+            }
+            other => panic!("expected EmptyArgumentRules, got {:?}", other),
+        }
     }
 
     #[test]

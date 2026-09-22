@@ -27,6 +27,12 @@ pub const MAX_IDENTIFIER_LENGTH: usize = 256;
 /// Maximum number of network port patterns allowed per rule.
 pub const MAX_NETWORK_PORT_PATTERNS: usize = 32;
 
+/// Maximum number of argument patterns allowed per `argument_rules` list
+/// (`deny_if_matches` / `require_match` each).
+pub const MAX_ARGUMENT_PATTERN_COUNT: usize = 64;
+/// Maximum length (in bytes) of a single argument pattern.
+pub const MAX_ARGUMENT_PATTERN_LENGTH: usize = 256;
+
 /// Authorization effect produced by a matching rule.
 ///
 /// Used internally in the policy model. Converted to
@@ -275,6 +281,77 @@ pub enum PolicyValidationError {
     /// Duplicate network port value.
     #[error("rule {0}: duplicate network port")]
     DuplicateNetworkPort(RuleId),
+    /// `argument_rules` was present but carries no patterns.
+    #[error(
+        "rule {0}: argument_rules present but empty; either list patterns or omit argument_rules"
+    )]
+    EmptyArgumentRules(RuleId),
+    /// More than [`MAX_ARGUMENT_PATTERN_COUNT`] patterns in one argument list.
+    #[error(
+        "rule {rule}: too many argument patterns in {which} ({count}); maximum is {max}",
+        rule = .0,
+        which = .1,
+        count = .2,
+        max = MAX_ARGUMENT_PATTERN_COUNT
+    )]
+    TooManyArgumentPatterns(RuleId, &'static str, usize),
+    /// An argument pattern string is empty.
+    #[error("rule {rule}: empty argument pattern in {which} at index {idx}", rule = .0, which = .1, idx = .2)]
+    EmptyArgumentPattern(RuleId, &'static str, usize),
+    /// An argument pattern exceeds [`MAX_ARGUMENT_PATTERN_LENGTH`].
+    #[error(
+        "rule {rule}: argument pattern in {which} at index {idx} is {len} bytes; maximum is {max}",
+        rule = .0,
+        which = .1,
+        idx = .2,
+        len = .3,
+        max = MAX_ARGUMENT_PATTERN_LENGTH
+    )]
+    ArgumentPatternTooLong(RuleId, &'static str, usize, usize),
+    /// Duplicate argument pattern string within one list.
+    #[error("rule {0}: duplicate argument pattern in {1}")]
+    DuplicateArgumentPattern(RuleId, &'static str),
+    /// An argument pattern contains null bytes or control characters.
+    #[error("rule {rule}: invalid argument pattern in {which} at index {idx}", rule = .0, which = .1, idx = .2)]
+    InvalidArgumentPattern(RuleId, &'static str, usize),
+}
+
+/// Argument-level conditions for command resources (Tier 1 policy capability).
+///
+/// Both lists hold glob patterns compiled with the same [`globset::GlobBuilder`]
+/// configuration as path globs (case-sensitive, `literal_separator`, backslash
+/// escapes). Each argument is matched **individually** — patterns never span
+/// argument boundaries, so `*pip*` matches the single argument `-mpip` but a
+/// pattern cannot accidentally join `"-m"` and `"pip"` across two arguments.
+///
+/// Semantics (both must hold when set):
+/// - `deny_if_matches`: the rule does **not** apply when **any** pattern
+///   matches **any** argument.
+/// - `require_match`: the rule applies **only** when **some** pattern matches
+///   **some** argument.
+#[derive(Debug, Clone, Default)]
+pub struct ArgumentRules {
+    /// Rule does not apply if any pattern matches any single argument.
+    pub deny_if_matches: Option<Vec<String>>,
+    /// Rule applies only if some pattern matches some single argument.
+    pub require_match: Option<Vec<String>>,
+}
+
+impl ArgumentRules {
+    /// Returns `true` when neither list carries a pattern.
+    pub fn is_empty(&self) -> bool {
+        let deny_empty = self
+            .deny_if_matches
+            .as_ref()
+            .map(|v| v.is_empty())
+            .unwrap_or(true);
+        let require_empty = self
+            .require_match
+            .as_ref()
+            .map(|v| v.is_empty())
+            .unwrap_or(true);
+        deny_empty && require_empty
+    }
 }
 
 /// Conditions that must all be satisfied for a rule to match a request.
@@ -342,6 +419,13 @@ pub struct RuleConditions {
     /// restriction. `Some(vec![])` is rejected during validation as
     /// [`EmptyNetworkPorts`](PolicyValidationError::EmptyNetworkPorts).
     pub network_ports: Option<Vec<u16>>,
+    /// Argument-level conditions for command resources.
+    ///
+    /// Only meaningful for command resources. `None` means no argument
+    /// restriction. `Some` with no patterns is rejected during validation as
+    /// [`EmptyArgumentRules`](PolicyValidationError::EmptyArgumentRules).
+    /// Non-command resources never match when this is configured.
+    pub argument_rules: Option<ArgumentRules>,
 }
 
 impl RuleConditions {
@@ -365,6 +449,11 @@ impl RuleConditions {
             && self.secret_identifiers.is_none()
             && self.tool_identifiers.is_none()
             && self.network_ports.is_none()
+            && self
+                .argument_rules
+                .as_ref()
+                .map(|r| r.is_empty())
+                .unwrap_or(true)
     }
 
     /// Validate `path_globs` patterns for this rule.
@@ -645,6 +734,93 @@ impl RuleConditions {
         Ok(())
     }
 
+    /// Validate `argument_rules` patterns for this rule.
+    ///
+    /// Mirrors [`validate_executables`](Self::validate_executables): length,
+    /// null/control-character and duplicate checks per list, plus glob-syntax
+    /// validation so a bad pattern fails at load time, not at match time.
+    pub fn validate_argument_rules(&self, rule_id: &RuleId) -> Result<(), PolicyValidationError> {
+        let rules = match &self.argument_rules {
+            None => return Ok(()),
+            Some(v) => v,
+        };
+        if rules.is_empty() {
+            return Err(PolicyValidationError::EmptyArgumentRules(rule_id.clone()));
+        }
+        Self::validate_argument_pattern_list(
+            rule_id,
+            "deny_if_matches",
+            rules.deny_if_matches.as_ref(),
+        )?;
+        Self::validate_argument_pattern_list(
+            rule_id,
+            "require_match",
+            rules.require_match.as_ref(),
+        )?;
+        Ok(())
+    }
+
+    /// Validate one argument-pattern list (`None` and empty-`None` skip).
+    ///
+    /// An explicitly present-but-empty list (`Some(vec![])`) is rejected as
+    /// [`EmptyArgumentRules`](PolicyValidationError::EmptyArgumentRules) to
+    /// match the `Some(vec![])`-is-an-error convention of the other matchers.
+    fn validate_argument_pattern_list(
+        rule_id: &RuleId,
+        which: &'static str,
+        patterns: Option<&Vec<String>>,
+    ) -> Result<(), PolicyValidationError> {
+        let patterns = match patterns {
+            None => return Ok(()),
+            Some(v) => v,
+        };
+        if patterns.is_empty() {
+            return Err(PolicyValidationError::EmptyArgumentRules(rule_id.clone()));
+        }
+        if patterns.len() > MAX_ARGUMENT_PATTERN_COUNT {
+            return Err(PolicyValidationError::TooManyArgumentPatterns(
+                rule_id.clone(),
+                which,
+                patterns.len(),
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for (i, pat) in patterns.iter().enumerate() {
+            if pat.is_empty() {
+                return Err(PolicyValidationError::EmptyArgumentPattern(
+                    rule_id.clone(),
+                    which,
+                    i,
+                ));
+            }
+            if pat.len() > MAX_ARGUMENT_PATTERN_LENGTH {
+                return Err(PolicyValidationError::ArgumentPatternTooLong(
+                    rule_id.clone(),
+                    which,
+                    i,
+                    pat.len(),
+                ));
+            }
+            if pat.contains('\u{0}') || pat.bytes().any(|b| b.is_ascii_control() && b != b'\t') {
+                return Err(PolicyValidationError::InvalidArgumentPattern(
+                    rule_id.clone(),
+                    which,
+                    i,
+                ));
+            }
+            if !seen.insert(pat.clone()) {
+                return Err(PolicyValidationError::DuplicateArgumentPattern(
+                    rule_id.clone(),
+                    which,
+                ));
+            }
+            globset::Glob::new(pat).map_err(|_| {
+                PolicyValidationError::InvalidArgumentPattern(rule_id.clone(), which, i)
+            })?;
+        }
+        Ok(())
+    }
+
     /// Validate `network_ports` patterns for this rule.
     ///
     /// Checks, in order:
@@ -672,6 +848,53 @@ impl RuleConditions {
             }
         }
         Ok(())
+    }
+}
+
+/// Returns `true` when a path-glob pattern is relative: no leading `/` or
+/// `\`, no Windows drive prefix (`C:`), no UNC/verbatim prefix.
+///
+/// Relative patterns can only match relative resource paths directly; for
+/// absolute resource paths the engine falls back to matching the
+/// `working_directory`-relative remainder (see `PolicyEngine` path logic).
+pub fn is_relative_glob_pattern(pat: &str) -> bool {
+    if pat.starts_with('/') || pat.starts_with('\\') {
+        return false;
+    }
+    let bytes = pat.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return false;
+    }
+    let lower = pat.to_ascii_lowercase();
+    if lower.starts_with("\\\\?\\") {
+        return false;
+    }
+    true
+}
+
+/// A non-fatal policy-load-time warning.
+///
+/// Warnings never reject a policy; they flag configurations that may not
+/// match as the author expects (e.g. a relative `path_globs` pattern with no
+/// guaranteed `working_directory` context at match time).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyWarning {
+    /// Rule the warning applies to.
+    pub rule_id: RuleId,
+    /// Human-readable, non-secret description.
+    pub message: String,
+}
+
+impl PolicyWarning {
+    /// Warning for a relative path pattern whose match depends on the
+    /// per-request `working_directory` (unavailable at load time).
+    pub fn relative_path_pattern(rule_id: RuleId, pattern: &str) -> Self {
+        Self {
+            rule_id,
+            message: format!(
+                "relative path pattern '{pattern}' has no guaranteed working_directory context and may not match absolute resource paths as expected"
+            ),
+        }
     }
 }
 
@@ -727,11 +950,39 @@ impl Policy {
             rule.conditions.validate_secret_identifiers(&rule.id)?;
             rule.conditions.validate_tool_identifiers(&rule.id)?;
             rule.conditions.validate_network_ports(&rule.id)?;
+            rule.conditions.validate_argument_rules(&rule.id)?;
             if !seen.insert(rule.id.clone()) {
                 return Err(PolicyValidationError::DuplicateRuleId(rule.id.clone()));
             }
         }
         Ok(())
+    }
+
+    /// Non-fatal warnings for this policy (relative path patterns, etc.).
+    ///
+    /// Call after [`validate`](Self::validate) succeeds; warnings never
+    /// reject a policy.
+    pub fn warnings(&self) -> Vec<PolicyWarning> {
+        let mut out = Vec::new();
+        for rule in &self.rules {
+            if let Some(globs) = &rule.conditions.path_globs {
+                for pat in globs {
+                    if is_relative_glob_pattern(pat) {
+                        out.push(PolicyWarning::relative_path_pattern(rule.id.clone(), pat));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Validate and also collect non-fatal warnings.
+    ///
+    /// Errors fail the load; warnings are returned alongside success for the
+    /// caller to log or surface.
+    pub fn validate_with_warnings(&self) -> Result<Vec<PolicyWarning>, PolicyValidationError> {
+        self.validate()?;
+        Ok(self.warnings())
     }
 }
 

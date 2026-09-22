@@ -3,9 +3,10 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AuthProvider } from '../context/AuthContext';
 import { useAuth } from '../context/useAuth';
-import { getStatus } from '../api';
+import { clearAuthToken, getStatus } from '../api';
 
 vi.mock('../api', () => ({
+  AUTH_INVALIDATED_EVENT: 'kavach:auth-invalidated',
   getStatus: vi.fn(),
   setAuthToken: vi.fn(),
   clearAuthToken: vi.fn(),
@@ -17,7 +18,7 @@ function TestLogin() {
   if (isAuthenticated) return <div data-testid="authenticated"><button data-testid="logout-btn" onClick={logout}>Logout</button></div>;
   return (
     <div>
-      <button data-testid="login-btn" onClick={() => login('test-token')}>Login</button>
+      <button data-testid="login-btn" onClick={() => { void login('test-token').catch(() => undefined); }}>Login</button>
       <div data-testid="not-authenticated">Not authenticated</div>
     </div>
   );
@@ -59,6 +60,22 @@ describe('Auth Flow', () => {
     fireEvent.click(screen.getByTestId('login-btn'));
     await waitFor(() => {
       expect(screen.getByTestId('authenticated')).toBeInTheDocument();
+    });
+  });
+
+  it('failed login clears the attempted in-memory token', async () => {
+    vi.mocked(getStatus).mockRejectedValue(new Error('Unauthorized'));
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <TestLogin />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+    fireEvent.click(screen.getByTestId('login-btn'));
+    await waitFor(() => {
+      expect(clearAuthToken).toHaveBeenCalled();
+      expect(screen.getByTestId('not-authenticated')).toBeInTheDocument();
     });
   });
 

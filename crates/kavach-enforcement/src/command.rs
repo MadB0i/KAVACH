@@ -370,8 +370,6 @@ fn validate_executable(exe: &str) -> Result<String, CommandError> {
 // Argument validation
 // ---------------------------------------------------------------------------
 
-const SHELL_CHAIN_PATTERNS: &[&str] = &["&&", "||", ";", "|"];
-
 fn validate_arguments(args: &[String]) -> Result<(), CommandError> {
     if args.len() > MAX_ARGUMENT_COUNT {
         return Err(CommandError::InvalidRequest(format!(
@@ -405,16 +403,22 @@ fn validate_arguments(args: &[String]) -> Result<(), CommandError> {
                 "argument {i} contains control character"
             )));
         }
-        // Reject output redirection operators.
-        if arg.contains('>') || arg.contains('<') {
+        // Reject dangerous shell constructs via the shared scanner
+        // (single source of truth with the policy-engine baseline).
+        // Covers the old `&& || ; | > <` set plus `$(...)`, backticks,
+        // `$VAR`/`${VAR}` and bare `(...)` subshells.
+        let hazards = kavach_core::scan_dangerous_shell_constructs(arg);
+        if !hazards.is_empty() {
+            let kinds: Vec<String> = {
+                let mut seen = std::collections::BTreeSet::new();
+                for h in &hazards {
+                    seen.insert(h.as_str());
+                }
+                seen.into_iter().map(str::to_string).collect()
+            };
             return Err(CommandError::ShellExecutionRejected(format!(
-                "argument {i} contains redirection operator"
-            )));
-        }
-        // Reject shell chaining operators.
-        if SHELL_CHAIN_PATTERNS.iter().any(|p| arg.contains(p)) {
-            return Err(CommandError::ShellExecutionRejected(format!(
-                "argument {i} contains shell chaining operator"
+                "argument {i} contains dangerous shell constructs: {}",
+                kinds.join(", ")
             )));
         }
         // Detect encoded PowerShell.

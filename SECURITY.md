@@ -39,3 +39,31 @@ KAVACH is designed with security as the default:
 - CSPRNG 256-bit approval tokens, hashed at rest
 - Constant-time token comparison
 - Input validation with `deny_unknown_fields` on all deserialization
+
+## Gateway and Dashboard Credentials
+
+The gateway requires `KAVACH_GATEWAY_TOKEN` to contain exactly 64 hexadecimal
+characters. Startup rejects a missing or malformed value. The server stores a
+hash for constant-time comparison and does not generate or print a token.
+
+The dashboard keeps the entered token in process memory only. It must not be
+placed in `localStorage`, `sessionStorage`, URLs, logs, audit events, or rendered
+operator data. A page refresh therefore requires re-authentication.
+
+Approval tokens and execution permits are separate from the gateway token.
+Approval API records omit raw tokens, and execution uses gateway-held permits
+rather than trusting client-supplied permit metadata.
+
+## Security Boundaries
+
+- KAVACH is an authorization and enforcement layer, not an operating-system
+  sandbox. It does not replace process isolation, containers, seccomp, or
+  least-privilege service accounts.
+- Policy path matching is lexical. Filesystem enforcement performs the
+  filesystem-aware containment check at execution time.
+- Network protection revalidates resolved addresses and redirect targets, but
+  operators should still apply outbound network controls for defense in depth.
+- Audit hashes make tampering detectable; they do not prevent an attacker with
+  database write access from deleting or replacing the database.
+- Raw approved tokens and issued permits are deliberately process-local and do
+  not survive a gateway restart. Pending approval records do persist.

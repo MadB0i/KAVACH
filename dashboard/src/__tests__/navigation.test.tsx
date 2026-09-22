@@ -8,6 +8,8 @@ import * as api from '../api';
 
 vi.mock('../api', () => ({
   getStatus: vi.fn(),
+  getHealth: vi.fn(),
+  verifyAudit: vi.fn(),
   setAuthToken: vi.fn(),
   clearAuthToken: vi.fn(),
   getApiBase: vi.fn(() => 'http://localhost:7421'),
@@ -46,24 +48,27 @@ describe('Navigation', () => {
     vi.clearAllMocks();
     mockMatchMedia(false);
     vi.mocked(api.getStatus).mockResolvedValue({ service: 'kavach', version: '1.0.0' });
+    vi.mocked(api.getHealth).mockReturnValue(new Promise(() => {}));
+    vi.mocked(api.verifyAudit).mockReturnValue(new Promise(() => {}));
   });
 
   it('renders all navigation links', async () => {
     renderWithProviders(<Layout />);
     const links = [
       'Overview', 'Live Requests', 'Pending Approvals', 'Audit Timeline',
-      'Policies', 'Agents/Sessions', 'Security Warnings', 'System Health',
+      'Policies', 'Agents / Sessions', 'Security Warnings', 'System Health',
       'Configuration', 'Audit Verification',
     ];
     for (const label of links) {
-      expect(screen.getByText(label)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
     }
   });
 
   it('has working logout button', () => {
     renderWithProviders(<Layout />);
-    const logoutBtn = screen.getByText('Logout');
-    expect(logoutBtn).toBeInTheDocument();
+    const operatorBtn = screen.getByLabelText('Open operator menu');
+    fireEvent.click(operatorBtn);
+    const logoutBtn = screen.getByText('End session');
     fireEvent.click(logoutBtn);
   });
 
@@ -75,7 +80,7 @@ describe('Navigation', () => {
 
   it('shows connection status indicator', () => {
     renderWithProviders(<Layout />);
-    const statusIndicator = screen.getByLabelText(/connected/i);
+    const statusIndicator = screen.getByText('Gateway');
     expect(statusIndicator).toBeInTheDocument();
   });
 });

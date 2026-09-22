@@ -19,7 +19,9 @@ use kavach_runtime::runtime::KavachRuntime;
 use crate::auth::GatewayToken;
 use crate::middleware::{auth as auth_mw, request_id as rid_mw};
 use crate::routes::{approvals, audit, evaluate, execute, health, policies};
-use crate::state::{GatewayConfig, GatewayState, RateLimiter};
+use crate::state::{
+    ApprovalTokenRegistry, GatewayConfig, GatewayState, IssuedPermitRegistry, RateLimiter,
+};
 
 pub(crate) fn is_loopback(addr: &IpAddr) -> bool {
     match addr {
@@ -89,24 +91,24 @@ impl GatewayBuilder {
         validate_bind(&config.bind, config.allow_non_loopback)?;
         let addr: std::net::SocketAddr = config.bind.parse()?;
 
-        let (token, _token_hex_display) = match self.token_hex {
+        let token = match self.token_hex {
             Some(hex_str) => {
+                if hex_str.len() != 64 || !hex_str.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err("gateway token must be exactly 64 hexadecimal characters".into());
+                }
                 let raw = hex::decode(&hex_str).map_err(|_| "invalid token hex")?;
+                if raw.len() != 32 {
+                    return Err("gateway token must be exactly 32 bytes (64 hex characters)".into());
+                }
                 let mut hash = [0u8; 32];
                 let mut hasher = sha2::Sha256::new();
                 use sha2::Digest;
                 hasher.update(&raw);
                 let result = hasher.finalize();
                 hash.copy_from_slice(&result);
-                (GatewayToken::from_hash(hash), hex_str)
+                GatewayToken::from_hash(hash)
             }
-            None => {
-                let (token, hex_str) = GatewayToken::generate();
-                eprintln!("=== GATEWAY AUTH TOKEN (store this securely) ===");
-                eprintln!("{hex_str}");
-                eprintln!("================================================");
-                (token, hex_str)
-            }
+            None => return Err("gateway authentication token is required".into()),
         };
 
         let state = Arc::new(GatewayState {
@@ -115,6 +117,9 @@ impl GatewayBuilder {
             config: config.clone(),
             concurrency_semaphore: tokio::sync::Semaphore::new(config.concurrency_limit),
             rate_limiter: RateLimiter::new(config.rate_limit_per_second, config.rate_limit_burst),
+            issued_permits: IssuedPermitRegistry::new(),
+            approval_tokens: ApprovalTokenRegistry::new(),
+            started_at: std::time::Instant::now(),
         });
 
         let api_routes = Router::new()
@@ -122,9 +127,10 @@ impl GatewayBuilder {
             .route("/requests/evaluate", post(evaluate::evaluate))
             .route("/requests/execute", post(execute::execute))
             .route("/approvals", get(approvals::list_approvals))
-            .route("/approvals/{id}", get(approvals::get_approval))
-            .route("/approvals/{id}/approve", post(approvals::approve_approval))
-            .route("/approvals/{id}/deny", post(approvals::deny_approval))
+            .route("/approvals/:id", get(approvals::get_approval))
+            .route("/approvals/:id/approve", post(approvals::approve_approval))
+            .route("/approvals/:id/deny", post(approvals::deny_approval))
+            .route("/approvals/:id/consume", post(approvals::consume_approval))
             .route("/audit/events", get(audit::list_events))
             .route("/audit/verify", post(audit::verify_chain))
             .route("/policies", get(policies::list_policies))
@@ -137,23 +143,45 @@ impl GatewayBuilder {
         let app = Router::new()
             .route("/health", get(health::health))
             .route("/ready", get(health::ready))
-            .nest("/api", api_routes);
+            .nest("/api", api_routes)
+            .layer(SetResponseHeaderLayer::overriding(
+                http::header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store"),
+            ));
 
-        // Serve dashboard static files at /dashboard/.
+        // Serve dashboard static files at /dashboard/. Explicit routes keep
+        // SPA fallbacks at HTTP 200 while the asset service retains real 404s.
         let dashboard_path = PathBuf::from("dashboard/dist");
         let app = {
             use axum::routing::get_service;
-            use tower_http::services::fs::ServeDir;
-            let serve_dir = ServeDir::new(&dashboard_path).append_index_html_on_directories(true);
-            app.route(
-                "/dashboard/*path",
-                get_service(serve_dir).handle_error(|e| async move {
+            use tower_http::services::fs::{ServeDir, ServeFile};
+            let index = dashboard_path.join("index.html");
+            let index_service = || {
+                get_service(ServeFile::new(index.clone())).handle_error(|e| async move {
                     (
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                         format!("static file error: {e}"),
                     )
-                }),
-            )
+                })
+            };
+            let assets = Router::new()
+                .nest_service(
+                    "/dashboard/assets",
+                    ServeDir::new(dashboard_path.join("assets")),
+                )
+                .layer(SetResponseHeaderLayer::overriding(
+                    http::header::CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=31536000, immutable"),
+                ));
+            let shell = Router::new()
+                .route("/dashboard", index_service())
+                .route("/dashboard/", index_service())
+                .route("/dashboard/*path", index_service())
+                .layer(SetResponseHeaderLayer::overriding(
+                    http::header::CACHE_CONTROL,
+                    HeaderValue::from_static("no-store"),
+                ));
+            app.merge(assets).merge(shell)
         };
 
         let app = app
@@ -164,16 +192,16 @@ impl GatewayBuilder {
                 HeaderValue::from_static("nosniff"),
             ))
             .layer(SetResponseHeaderLayer::overriding(
-                http::header::CACHE_CONTROL,
-                HeaderValue::from_static("no-store"),
-            ))
-            .layer(SetResponseHeaderLayer::overriding(
                 http::header::REFERRER_POLICY,
                 HeaderValue::from_static("no-referrer"),
             ))
             .layer(SetResponseHeaderLayer::overriding(
                 http::header::CONTENT_SECURITY_POLICY,
-                HeaderValue::from_static("frame-ancestors 'none'"),
+                HeaderValue::from_static(
+                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+                     img-src 'self' data:; connect-src 'self'; font-src 'self'; \
+                     frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+                ),
             ))
             .layer(
                 CorsLayer::new()

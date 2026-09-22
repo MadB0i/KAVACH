@@ -1,19 +1,15 @@
 # cargo-deny configuration
 # https://embarkstudios.github.io/cargo-deny/
 
-[graph]
-# Skip dev-dependencies when checking (they are not shipped)
-dev-dependencies = false
+# Development dependencies are included in the dependency graph by default so
+# security checks cover the complete workspace.
 
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-unsound = "deny"
-notice = "warn"
+unmaintained = "workspace"
+unsound = "all"
 ignore = []
 
 [licenses]
-unlicensed = "deny"
 allow = [
     "Apache-2.0",
     "MIT",
@@ -24,12 +20,12 @@ allow = [
     "CC0-1.0",
     "Zlib",
     "OpenSSL",
+    # CDLA-Permissive-2.0 covers only the Mozilla CA certificate *data* in
+    # webpki-roots (the Rust code is ISC-licensed). It is an SPDX-recognized
+    # permissive license, compatible with Apache-2.0 dependents.
+    "CDLA-Permissive-2.0",
 ]
-deny = []
-copyleft = "deny"
-allow-osi-fsf-free = "neither"
-default = "deny"
-confidence = 0.8
+confidence-threshold = 0.8
 
 [licenses.private]
 ignore = true
@@ -38,7 +34,21 @@ ignore = true
 multiple-versions = "deny"
 wildcards = "deny"
 deny = []
-skip = []
+# Acknowledged duplicates that cannot be unified from this workspace
+# (each is pinned by an upstream crate; exact versions force re-review
+# on the next bump instead of silently accepting drift):
+skip = [
+    # getrandom 0.3/0.4 come only from the dev-only proptest chain
+    # (rand 0.9, tempfile); production uses 0.2 (uuid, ring, gateway).
+    { name = "getrandom", version = "=0.3.4" },
+    { name = "getrandom", version = "=0.4.3" },
+    # hashbrown 0.14 is pinned by rusqlite 0.31 via hashlink 0.9;
+    # 0.17 arrives via indexmap (h2, toml).
+    { name = "hashbrown", version = "=0.14.5" },
+    # windows-sys 0.52 is pinned by ring 0.17 (via rustls);
+    # 0.61 arrives via the clap/anstream chain.
+    { name = "windows-sys", version = "=0.52.0" },
+]
 skip-tree = []
 
 [sources]

@@ -14,7 +14,6 @@ request_timeout_seconds = 30
 workspace_root = "."
 # Must remain true — fail-closed posture is mandatory
 # fail_closed = true
-approval_required_for_destructive_operations = true
 
 [policy]
 # Policy files loaded at startup
@@ -24,9 +23,10 @@ files = ["./config/default-policy.toml"]
 # SQLite database for the tamper-evident audit chain
 database = "./data/kavach-audit.db"
 verify_on_startup = true
-rotation_max_events = 100000
 
 [approval]
+# SQLite state for restart-safe approvals
+database = "./data/kavach-approvals.db"
 # Default time-to-live for approval requests (seconds)
 default_ttl_seconds = 300
 max_pending = 1000

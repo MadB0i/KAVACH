@@ -7,6 +7,7 @@ import { AuthProvider } from '../context/AuthContext';
 
 vi.mock('../api', () => ({
   getAuditEvents: vi.fn(),
+  verifyAudit: vi.fn(),
   setAuthToken: vi.fn(),
   clearAuthToken: vi.fn(),
   getStatus: vi.fn(),
@@ -30,6 +31,7 @@ describe('AuditTimeline', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.getStatus).mockResolvedValue({ service: 'kavach' });
+    vi.mocked(api.verifyAudit).mockResolvedValue({ chain_valid: true, event_count: 2, verified_to: 2 });
   });
 
   it('renders audit events', async () => {
@@ -45,7 +47,7 @@ describe('AuditTimeline', () => {
     vi.mocked(api.getAuditEvents).mockResolvedValue([]);
     renderWithProviders(<AuditTimeline />);
     await waitFor(() => {
-      expect(screen.getByText('No Audit Events')).toBeInTheDocument();
+      expect(screen.getByText('No audit events recorded')).toBeInTheDocument();
     });
   });
 
@@ -53,7 +55,7 @@ describe('AuditTimeline', () => {
     vi.mocked(api.getAuditEvents).mockRejectedValue(new Error('API error'));
     renderWithProviders(<AuditTimeline />);
     await waitFor(() => {
-      expect(screen.getByText('Failed to load audit events')).toBeInTheDocument();
+      expect(screen.getByText('Audit timeline unavailable')).toBeInTheDocument();
     });
   });
 });

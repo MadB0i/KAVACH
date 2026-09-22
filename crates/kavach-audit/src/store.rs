@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::Utc;
-use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use uuid::Uuid;
 
 use crate::canonical::encode_canonical;
@@ -47,6 +47,13 @@ impl AuditStoreBuilder {
 
     /// Opens (or creates) the database at the given path.
     pub fn open(self, path: &str) -> Result<AuditStore, AuditError> {
+        if let Some(parent) = std::path::Path::new(path)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| AuditError::database_open(e.to_string()))?;
+        }
         let mut conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
@@ -57,7 +64,7 @@ impl AuditStoreBuilder {
         run_migrations(&conn)?;
 
         Ok(AuditStore {
-            conn: std::sync::Mutex::new(conn),
+            conn: Arc::new(std::sync::Mutex::new(conn)),
             redactor: self.redactor,
         })
     }
@@ -71,7 +78,7 @@ impl AuditStoreBuilder {
         run_migrations(&conn)?;
 
         Ok(AuditStore {
-            conn: std::sync::Mutex::new(conn),
+            conn: Arc::new(std::sync::Mutex::new(conn)),
             redactor: self.redactor,
         })
     }
@@ -88,13 +95,26 @@ fn configure_connection(conn: &mut Connection, busy_timeout: u64) -> Result<(), 
 }
 
 fn run_migrations(conn: &Connection) -> Result<(), AuditError> {
-    let version: u64 = conn
+    let has_version_table: bool = conn
         .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'schema_version'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| AuditError::migration_failure(e.to_string()))?;
+    let version: u64 = if has_version_table {
+        conn.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_version",
             [],
             |row| row.get(0),
         )
-        .unwrap_or(0);
+        .map_err(|e| AuditError::migration_failure(e.to_string()))?
+    } else {
+        0
+    };
 
     if version > CURRENT_SCHEMA_VERSION {
         return Err(AuditError::unsupported_schema_version(version));
@@ -136,8 +156,9 @@ fn run_migrations(conn: &Connection) -> Result<(), AuditError> {
 }
 
 /// Append-only, tamper-evident audit event store backed by SQLite.
+#[derive(Clone)]
 pub struct AuditStore {
-    conn: std::sync::Mutex<Connection>,
+    conn: Arc<std::sync::Mutex<Connection>>,
     redactor: Option<Arc<dyn Redactor>>,
 }
 
@@ -170,23 +191,27 @@ impl AuditStore {
             .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
 
         // Read latest sequence and hash.
-        let (latest_seq, latest_hash_bytes): (Option<u64>, Option<Vec<u8>>) = tx
+        let latest: Option<(u64, Vec<u8>)> = tx
             .query_row(
-                "SELECT MAX(sequence), current_hash FROM audit_events ORDER BY sequence DESC LIMIT 1",
+                "SELECT sequence, current_hash
+                 FROM audit_events ORDER BY sequence DESC LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .unwrap_or((None, None));
+            .optional()
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
 
-        let sequence = latest_seq.map(|s| s + 1).unwrap_or(1);
-        let previous_hash = match latest_hash_bytes {
-            Some(bytes) => {
+        let (sequence, previous_hash) = match latest {
+            Some((latest_sequence, bytes)) => {
                 let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
                     AuditError::database_corruption("invalid hash length in database")
                 })?;
-                HashValue::from_bytes(arr)
+                let sequence = latest_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| AuditError::append_failure("sequence overflow"))?;
+                (sequence, HashValue::from_bytes(arr))
             }
-            None => HashValue::genesis(),
+            None => (1, HashValue::genesis()),
         };
 
         let event_id = Uuid::new_v4().to_string();
@@ -273,8 +298,13 @@ impl AuditStore {
             )
             .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
 
-        let result = stmt.query_row([], row_to_event).map(Some).unwrap_or(None);
-        Ok(result)
+        stmt.query_row([], row_to_event).map(Some).or_else(|e| {
+            if e == rusqlite::Error::QueryReturnedNoRows {
+                Ok(None)
+            } else {
+                Err(AuditError::transaction_failure(e.to_string()))
+            }
+        })
     }
 
     /// Returns the event at the given sequence number.
@@ -292,11 +322,15 @@ impl AuditStore {
             )
             .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
 
-        let result = stmt
-            .query_row(params![sequence], row_to_event)
+        stmt.query_row(params![sequence], row_to_event)
             .map(Some)
-            .unwrap_or(None);
-        Ok(result)
+            .or_else(|e| {
+                if e == rusqlite::Error::QueryReturnedNoRows {
+                    Ok(None)
+                } else {
+                    Err(AuditError::transaction_failure(e.to_string()))
+                }
+            })
     }
 
     /// Returns events after the given sequence, up to `limit`.
@@ -322,8 +356,36 @@ impl AuditStore {
         let rows = stmt
             .query_map(params![after, limit], row_to_event)
             .map_err(|e| AuditError::transaction_failure(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
+        Ok(rows)
+    }
+
+    /// Returns events before the given sequence in newest-first order.
+    pub fn events_before_sequence(
+        &self,
+        before: u64,
+        limit: u64,
+    ) -> Result<Vec<AuditEventRecord>, AuditError> {
+        let limit = limit.min(MAX_EVENT_QUERY_COUNT);
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT sequence, event_id, timestamp, category, request_id, agent_id, \
+                 operation, resource_kind, resource_summary, decision, reason_code, \
+                 matched_rule_ids, metadata, previous_hash, current_hash \
+                 FROM audit_events WHERE sequence < ?1 ORDER BY sequence DESC LIMIT ?2",
+            )
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![before, limit], row_to_event)
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
         Ok(rows)
     }
 
@@ -350,8 +412,8 @@ impl AuditStore {
         let rows = stmt
             .query_map(params![request_id, limit], row_to_event)
             .map_err(|e| AuditError::transaction_failure(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
         Ok(rows)
     }
 
@@ -378,8 +440,8 @@ impl AuditStore {
         let rows = stmt
             .query_map(params![category.to_string(), limit], row_to_event)
             .map_err(|e| AuditError::transaction_failure(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
         Ok(rows)
     }
 
@@ -391,7 +453,7 @@ impl AuditStore {
             .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
         let count: u64 = conn
             .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
-            .unwrap_or(0);
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
 
         let latest = self.latest_event_inner(&conn)?;
         let genesis_hash = HashValue::genesis().to_string();
@@ -500,8 +562,8 @@ impl AuditStore {
         let rows = stmt
             .query_map([], row_to_event)
             .map_err(|e| AuditError::transaction_failure(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
         Ok(rows)
     }
 
@@ -533,8 +595,8 @@ impl AuditStore {
         let rows = stmt
             .query_map(params![start, end], row_to_event)
             .map_err(|e| AuditError::transaction_failure(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| AuditError::transaction_failure(e.to_string()))?;
         Ok(rows)
     }
 }
@@ -545,15 +607,36 @@ fn row_to_event(row: &rusqlite::Row) -> rusqlite::Result<AuditEventRecord> {
     let prev_hash_bytes: Vec<u8> = row.get(13)?;
     let curr_hash_bytes: Vec<u8> = row.get(14)?;
 
-    let matched_rule_ids: Vec<String> = serde_json::from_str(&matched_json).unwrap_or_default();
+    let matched_rule_ids: Vec<String> = serde_json::from_str(&matched_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(11, rusqlite::types::Type::Text, Box::new(error))
+    })?;
     let metadata: BTreeMap<String, String> =
-        serde_json::from_str(&metadata_json).unwrap_or_default();
+        serde_json::from_str(&metadata_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                12,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
 
     let cat_str: String = row.get(3)?;
-    let category = parse_category(&cat_str).unwrap_or(AuditEventCategory::SecurityWarning);
+    let category = parse_category(&cat_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown audit category: {cat_str}"),
+            )),
+        )
+    })?;
 
-    let prev_arr: [u8; 32] = prev_hash_bytes.as_slice().try_into().unwrap_or([0u8; 32]);
-    let curr_arr: [u8; 32] = curr_hash_bytes.as_slice().try_into().unwrap_or([0u8; 32]);
+    let prev_arr: [u8; 32] = prev_hash_bytes.as_slice().try_into().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(13, rusqlite::types::Type::Blob, Box::new(error))
+    })?;
+    let curr_arr: [u8; 32] = curr_hash_bytes.as_slice().try_into().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(14, rusqlite::types::Type::Blob, Box::new(error))
+    })?;
 
     Ok(AuditEventRecord {
         sequence: row.get(0)?,
@@ -584,6 +667,7 @@ fn parse_category(s: &str) -> Option<AuditEventCategory> {
         "ApprovalApproved" => Some(AuditEventCategory::ApprovalApproved),
         "ApprovalDenied" => Some(AuditEventCategory::ApprovalDenied),
         "ApprovalExpired" => Some(AuditEventCategory::ApprovalExpired),
+        "ApprovalConsumed" => Some(AuditEventCategory::ApprovalConsumed),
         "ExecutionStarted" => Some(AuditEventCategory::ExecutionStarted),
         "ExecutionSucceeded" => Some(AuditEventCategory::ExecutionSucceeded),
         "ExecutionFailed" => Some(AuditEventCategory::ExecutionFailed),

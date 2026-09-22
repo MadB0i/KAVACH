@@ -11,6 +11,7 @@ members = [
     "crates/kavach-audit",
     "crates/kavach-approval",
     "crates/kavach-gateway",
+    "crates/kavach-dashboard",
     "crates/kavach-mcp",
     "examples/kavach-examples",
 ]

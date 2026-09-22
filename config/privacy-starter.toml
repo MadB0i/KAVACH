@@ -1,0 +1,74 @@
+# Kavach privacy starter pack — a STARTING POINT, not a mandate.
+#
+# Copy this file and tailor it to your projects. `kavach setup` stages it as
+# ~/.kavach/policy.toml on first run only and never overwrites your edits.
+# Validate any edit with: kavach policy validate --file <this-file>
+# Test behaviour with:    kavach policy test --policy <this-file> --scenarios <file>
+schema_version = 1
+
+[policy]
+id = "privacy-starter"
+name = "Privacy starter pack"
+description = "Deny credential/secret paths and unlisted outbound network; allow safe local dev commands"
+default_effect = "deny"
+
+# ---- Credential and secret files: never readable nor writable ----
+[[rules]]
+id = "deny-credential-files"
+description = "Block .env, credentials, private keys, browser cookie stores"
+effect = "deny"
+
+[rules.conditions]
+operations = ["file_read", "file_write", "file_create", "file_delete", "file_move"]
+resource_kinds = ["file", "directory"]
+path_globs = [
+  "**/.env",
+  "**/.env.*",
+  "**/*credentials*",
+  "**/*secret*",
+  "**/.ssh/**",
+  "**/id_rsa",
+  "**/id_ed25519",
+  "**/*.pem",
+  "**/*.key",
+  "**/Cookies",
+  "**/cookies.sqlite",
+  "**/Login Data",
+  "**/.aws/**",
+  "**/.gnupg/**",
+]
+
+# ---- Safe local inspection commands ----
+[[rules]]
+id = "allow-safe-commands"
+description = "Allow read-only inspection and version-control commands"
+effect = "allow"
+
+[rules.conditions]
+operations = ["command_execute"]
+resource_kinds = ["command"]
+executables = ["cat", "ls", "pwd", "echo", "head", "tail", "grep", "find", "git", "cargo", "whoami", "date", "uname"]
+
+# ---- Outbound network: familiar hosts only ----
+# Everything else falls through to default-deny. Add your own hosts here;
+# the policy model matches exact host/scheme/port (no wildcards yet).
+[[rules]]
+id = "allow-familiar-hosts"
+description = "Allow HTTPS to package registries and code hosts"
+effect = "allow"
+
+[rules.conditions]
+operations = ["network_request"]
+resource_kinds = ["network_endpoint"]
+network_hosts = ["github.com", "api.github.com", "crates.io", "static.crates.io", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org"]
+network_schemes = ["https"]
+
+# ---- File writes need a human ----
+[[rules]]
+id = "require-approval-file-write"
+description = "Require human approval for any file write"
+effect = "require_approval"
+
+[rules.conditions]
+operations = ["file_write", "file_create", "file_delete", "file_move"]
+resource_kinds = ["file"]

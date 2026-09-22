@@ -29,10 +29,21 @@ pub const MAX_DENIAL_REASON_LENGTH: usize = 1_024;
 pub const MAX_QUERY_LIMIT: u64 = 1_000;
 
 /// Configuration for the SQLite approval store.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ApprovalStoreConfig {
-    /// Path to the SQLite database file.
-    pub db_path: Option<String>,
+    /// Default lifetime applied when a request does not provide one.
+    pub default_ttl_seconds: u64,
+    /// Maximum number of simultaneously pending approvals.
+    pub max_pending: usize,
+}
+
+impl Default for ApprovalStoreConfig {
+    fn default() -> Self {
+        Self {
+            default_ttl_seconds: DEFAULT_APPROVAL_TTL_SECONDS,
+            max_pending: DEFAULT_MAX_PENDING_APPROVALS,
+        }
+    }
 }
 
 /// The current state of an approval.

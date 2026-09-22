@@ -13,19 +13,56 @@ use crate::model::{
 // Compiled types — private; pre-compile glob patterns once at construction.
 // ---------------------------------------------------------------------------
 
-/// A rule with a pre-compiled path glob matcher.
+/// A rule with pre-compiled glob matchers.
 #[derive(Debug, Clone)]
 struct CompiledRule {
     rule: crate::model::Rule,
     /// Compiled `GlobSet` when `path_globs` is `Some(non_empty)`, else `None`.
     path_matcher: Option<globset::GlobSet>,
+    /// Whether any configured path pattern is relative (no leading `/` or
+    /// drive prefix). Enables the `working_directory`-relative fallback.
+    has_relative_patterns: bool,
+    /// Compiled `GlobSet` for `argument_rules.deny_if_matches`, else `None`.
+    arg_deny_matcher: Option<globset::GlobSet>,
+    /// Compiled `GlobSet` for `argument_rules.require_match`, else `None`.
+    arg_require_matcher: Option<globset::GlobSet>,
+}
+
+/// Compile one glob pattern with the single shared configuration used by
+/// every matcher in this engine (path globs and argument patterns alike).
+fn compile_shared_glob(
+    pat: &str,
+    rule_id: &RuleId,
+    index: usize,
+) -> Result<globset::Glob, PolicyValidationError> {
+    globset::GlobBuilder::new(pat)
+        .literal_separator(true)
+        .case_insensitive(false)
+        .backslash_escape(true)
+        .build()
+        .map_err(|_| PolicyValidationError::InvalidGlobPattern(rule_id.clone(), index))
 }
 
 /// A policy whose rules have been validated and whose path globs are compiled.
 #[derive(Debug, Clone)]
 struct CompiledPolicy {
+    id: String,
+    name: String,
     default_effect: DefaultEffect,
     rules: Vec<CompiledRule>,
+}
+
+/// Read-only policy metadata suitable for status and management APIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicySummary {
+    /// Stable policy identifier.
+    pub id: String,
+    /// Human-readable policy name.
+    pub name: String,
+    /// Fail-closed default effect.
+    pub default_effect: DefaultEffect,
+    /// Number of rules in the policy.
+    pub rule_count: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -82,17 +119,71 @@ impl PolicyEngine {
             let mut rules = Vec::with_capacity(policy.rules.len());
             for rule in &policy.rules {
                 let path_matcher = build_path_matcher(&rule.conditions, &rule.id)?;
+                let has_relative_patterns = rule
+                    .conditions
+                    .path_globs
+                    .as_ref()
+                    .map(|globs| {
+                        globs
+                            .iter()
+                            .any(|p| crate::model::is_relative_glob_pattern(p))
+                    })
+                    .unwrap_or(false);
+                let (arg_deny_matcher, arg_require_matcher) =
+                    build_argument_matchers(&rule.conditions, &rule.id)?;
                 rules.push(CompiledRule {
                     rule: rule.clone(),
                     path_matcher,
+                    has_relative_patterns,
+                    arg_deny_matcher,
+                    arg_require_matcher,
                 });
             }
             compiled.push(CompiledPolicy {
+                id: policy.id.to_string(),
+                name: policy.name.clone(),
                 default_effect: policy.default_effect,
                 rules,
             });
         }
         Ok(Self { compiled })
+    }
+
+    /// Non-fatal load-time warnings for the currently loaded policies.
+    ///
+    /// Currently reports relative `path_globs` patterns, which depend on the
+    /// per-request `working_directory` and therefore have no guaranteed match
+    /// context. Callers should log or surface these; they never fail the load.
+    pub fn warnings(&self) -> Vec<crate::model::PolicyWarning> {
+        let mut out = Vec::new();
+        for cp in &self.compiled {
+            for cr in &cp.rules {
+                if let Some(globs) = &cr.rule.conditions.path_globs {
+                    for pat in globs {
+                        if crate::model::is_relative_glob_pattern(pat) {
+                            out.push(crate::model::PolicyWarning::relative_path_pattern(
+                                cr.rule.id.clone(),
+                                pat,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Return metadata for the currently loaded policy snapshot.
+    pub fn summaries(&self) -> Vec<PolicySummary> {
+        self.compiled
+            .iter()
+            .map(|policy| PolicySummary {
+                id: policy.id.clone(),
+                name: policy.name.clone(),
+                default_effect: policy.default_effect,
+                rule_count: policy.rules.len(),
+            })
+            .collect()
     }
 
     /// Evaluate a [`ToolRequest`] against all loaded policies.
@@ -126,28 +217,107 @@ impl PolicyEngine {
             );
         }
 
+        // Step 1b: Built-in dangerous-invocation baseline. Always on and
+        // evaluated before any policy-authored rule, so an allow-listed
+        // interpreter name cannot smuggle `python -c`, `python -m pip`,
+        // `perl -e` etc. past the engine. Deny wins by construction.
+        if let kavach_core::resource::Resource::Command(cmd) = &request.resource {
+            if let Some(reason) = dangerous_invocation_reason(cmd) {
+                let mut ids: BTreeSet<RuleId> = BTreeSet::new();
+                if let Ok(baseline_id) = RuleId::new(BASELINE_DANGEROUS_INTERPRETER_RULE_ID) {
+                    ids.insert(baseline_id);
+                }
+                return AuthorizationDecision::new_with_trace(
+                    DecisionEffect::Deny,
+                    ReasonCode::KavachDenyExplicitRule,
+                    format!(
+                        "denied by built-in baseline ({}): refusing {} invocation",
+                        reason,
+                        executable_basename(cmd.executable())
+                    ),
+                    ids,
+                    evaluated_at,
+                    request_id,
+                    None,
+                    None,
+                    kavach_core::DecisionTrace {
+                        baseline_triggered: Some(reason.to_string()),
+                        failed_conditions: Vec::new(),
+                    },
+                );
+            }
+            // Step 1c: Built-in shell-hazard baseline. Same Tier 2 philosophy:
+            // every argument of every command is scanned with the shared
+            // scanner, regardless of executable, so `echo 'x' > file` can no
+            // longer ride an executable allowlist past the engine. No policy
+            // file is consulted or required.
+            if let Some(reason) = shell_hazard_reason(cmd) {
+                let mut ids: BTreeSet<RuleId> = BTreeSet::new();
+                if let Ok(baseline_id) = RuleId::new(BASELINE_SHELL_HAZARD_RULE_ID) {
+                    ids.insert(baseline_id);
+                }
+                return AuthorizationDecision::new_with_trace(
+                    DecisionEffect::Deny,
+                    ReasonCode::KavachDenyExplicitRule,
+                    format!(
+                        "denied by built-in baseline ({}): refusing {} invocation",
+                        reason,
+                        executable_basename(cmd.executable())
+                    ),
+                    ids,
+                    evaluated_at,
+                    request_id,
+                    None,
+                    None,
+                    kavach_core::DecisionTrace {
+                        baseline_triggered: Some(reason),
+                        failed_conditions: Vec::new(),
+                    },
+                );
+            }
+        }
+
         // Step 2: Evaluate all rules, collecting IDs by effect group.
+        // Failed condition dimensions are gathered (bounded, distinct) for
+        // the additive decision trace.
         let mut deny_ids: BTreeSet<RuleId> = BTreeSet::new();
         let mut approval_ids: BTreeSet<RuleId> = BTreeSet::new();
         let mut allow_ids: BTreeSet<RuleId> = BTreeSet::new();
+        let mut failed_conditions: Vec<String> = Vec::new();
 
         for cp in &self.compiled {
             for cr in &cp.rules {
-                if rule_matches(cr, request) {
+                let (matched, failed) = rule_match_outcome(cr, request);
+                if matched {
                     match cr.rule.effect {
                         Effect::Deny => deny_ids.insert(cr.rule.id.clone()),
                         Effect::RequireApproval => approval_ids.insert(cr.rule.id.clone()),
                         Effect::Allow => allow_ids.insert(cr.rule.id.clone()),
                     };
+                } else {
+                    for name in failed {
+                        if failed_conditions.len() >= MAX_TRACE_FAILED_CONDITIONS {
+                            break;
+                        }
+                        let name = name.to_string();
+                        if !failed_conditions.contains(&name) {
+                            failed_conditions.push(name);
+                        }
+                    }
                 }
             }
         }
+
+        let trace = kavach_core::DecisionTrace {
+            baseline_triggered: None,
+            failed_conditions,
+        };
 
         // Step 3: Resolve precedence — highest-priority group with at least
         // one match wins.
         if !deny_ids.is_empty() {
             let ids: Vec<RuleId> = deny_ids.into_iter().collect();
-            AuthorizationDecision::new(
+            AuthorizationDecision::new_with_trace(
                 DecisionEffect::Deny,
                 ReasonCode::KavachDenyExplicitRule,
                 format!("denied by explicit rules: {}", join_ids(&ids)),
@@ -156,10 +326,11 @@ impl PolicyEngine {
                 request_id,
                 None,
                 None,
+                trace,
             )
         } else if !approval_ids.is_empty() {
             let ids: Vec<RuleId> = approval_ids.into_iter().collect();
-            AuthorizationDecision::new(
+            AuthorizationDecision::new_with_trace(
                 DecisionEffect::RequireApproval,
                 ReasonCode::KavachApprovalRequired,
                 format!("approval required by rules: {}", join_ids(&ids)),
@@ -168,10 +339,11 @@ impl PolicyEngine {
                 request_id,
                 None,
                 None,
+                trace,
             )
         } else if !allow_ids.is_empty() {
             let ids: Vec<RuleId> = allow_ids.into_iter().collect();
-            AuthorizationDecision::new(
+            AuthorizationDecision::new_with_trace(
                 DecisionEffect::Allow,
                 ReasonCode::KavachAllowPolicyMatch,
                 format!("allowed by rules: {}", join_ids(&ids)),
@@ -180,6 +352,7 @@ impl PolicyEngine {
                 request_id,
                 None,
                 None,
+                trace,
             )
         } else {
             // No rule matched — policy default (Allow is impossible at type level).
@@ -188,7 +361,7 @@ impl PolicyEngine {
                 .first()
                 .map(|p| p.default_effect)
                 .unwrap_or(DefaultEffect::Deny);
-            AuthorizationDecision::new(
+            AuthorizationDecision::new_with_trace(
                 default.to_decision_effect(),
                 default.reason_code(),
                 format!(
@@ -200,6 +373,7 @@ impl PolicyEngine {
                 request_id,
                 None,
                 None,
+                trace,
             )
         }
     }
@@ -234,18 +408,167 @@ fn build_path_matcher(
     }
     let mut builder = globset::GlobSetBuilder::new();
     for (i, pat) in globs.iter().enumerate() {
-        let glob = globset::GlobBuilder::new(pat)
-            .literal_separator(true)
-            .case_insensitive(false)
-            .backslash_escape(true)
-            .build()
-            .map_err(|_| PolicyValidationError::InvalidGlobPattern(rule_id.clone(), i))?;
-        builder.add(glob);
+        builder.add(compile_shared_glob(pat, rule_id, i)?);
     }
     builder
         .build()
         .map(Some)
         .map_err(|_| PolicyValidationError::GlobCompileConflict(rule_id.clone()))
+}
+
+/// Build compiled [`globset::GlobSet`]s for `argument_rules` patterns.
+///
+/// Returns `(deny_matcher, require_matcher)`. Each list is matched per
+/// argument (never across argument boundaries). Validation has already
+/// rejected malformed patterns; a build failure here maps to
+/// [`PolicyValidationError::GlobCompileConflict`].
+fn build_argument_matchers(
+    cond: &RuleConditions,
+    rule_id: &RuleId,
+) -> Result<(Option<globset::GlobSet>, Option<globset::GlobSet>), PolicyValidationError> {
+    let rules = match &cond.argument_rules {
+        None => return Ok((None, None)),
+        Some(v) => v,
+    };
+    let compile_list = |patterns: Option<&Vec<String>>| -> Result<Option<globset::GlobSet>, PolicyValidationError> {
+        let patterns = match patterns {
+            None => return Ok(None),
+            Some(v) => v,
+        };
+        if patterns.is_empty() {
+            return Ok(None);
+        }
+        let mut builder = globset::GlobSetBuilder::new();
+        for (i, pat) in patterns.iter().enumerate() {
+            let glob = compile_shared_glob(pat, rule_id, i).map_err(|_| {
+                PolicyValidationError::InvalidArgumentPattern(rule_id.clone(), "argument_rules", i)
+            })?;
+            builder.add(glob);
+        }
+        builder
+            .build()
+            .map(Some)
+            .map_err(|_| PolicyValidationError::GlobCompileConflict(rule_id.clone()))
+    };
+    Ok((
+        compile_list(rules.deny_if_matches.as_ref())?,
+        compile_list(rules.require_match.as_ref())?,
+    ))
+}
+
+/// Synthetic rule ID attributed when the built-in dangerous-invocation
+/// baseline fires. It is not a policy-authored rule; it exists so the denial
+/// shows up in `matched_rule_ids` like any other explicit deny.
+pub const BASELINE_DANGEROUS_INTERPRETER_RULE_ID: &str = "baseline-dangerous-interpreter";
+
+/// Synthetic rule ID attributed when the built-in shell-hazard baseline
+/// fires (chaining, piping, redirection, subshell grouping in command
+/// arguments, regardless of executable). Substitution/expansion hazards
+/// (`$(...)`, backticks, `$VAR`) stay attributed to
+/// [`BASELINE_DANGEROUS_INTERPRETER_RULE_ID`].
+pub const BASELINE_SHELL_HAZARD_RULE_ID: &str = "baseline-shell-hazard";
+
+/// Basename (lower-cased, `.exe` stripped) of an executable path.
+fn executable_basename(exe: &str) -> String {
+    let base = exe.rsplit(['/', '\\']).next().unwrap_or(exe).to_lowercase();
+    base.strip_suffix(".exe").unwrap_or(&base).to_string()
+}
+
+/// Returns `true` when the executable is a known script interpreter whose
+/// very first flags turn it into arbitrary-code execution.
+fn is_known_interpreter(base: &str) -> bool {
+    base == "python"
+        || base.starts_with("python3")
+        || base.starts_with("python2")
+        || base == "perl"
+        || base == "ruby"
+        || base == "node"
+        || base == "nodejs"
+}
+
+/// Hardcoded, always-on baseline: known-dangerous interpreter eval flags.
+///
+/// This is Tier 2 — deliberately NOT policy-author-configurable, so an
+/// under-specified policy file cannot silently disable it. It fires for:
+/// - `python`/`python3` with `-c` as the first argument (inline code)
+/// - `python`/`python3 -m pip` or `-m easy_install` (supply-chain install)
+/// - `perl`/`ruby`/`node` with `-e` as the first argument (inline code)
+/// - any `-c`/`-e` immediately following a known interpreter executable
+/// - any argument carrying a substitution/expansion hazard (`$(...)`,
+///   backticks, `$VAR`/`${VAR}`), via the shared
+///   [`kavach_core::scan_dangerous_shell_constructs`] scanner
+///
+/// The check is intentionally narrow (first-argument flags, exact module
+/// names) so legitimate interpreter uses (`python script.py`,
+/// `node server.js`) are unaffected.
+pub fn is_known_dangerous_invocation(cmd: &kavach_core::resource::CommandResource) -> bool {
+    dangerous_invocation_reason(cmd).is_some()
+}
+
+/// Machine-readable reason why [`is_known_dangerous_invocation`] fired.
+/// Returns `None` when the invocation is not a known-dangerous one. The
+/// reason never echoes argument payloads (they may carry secrets).
+pub(crate) fn dangerous_invocation_reason(
+    cmd: &kavach_core::resource::CommandResource,
+) -> Option<&'static str> {
+    let base = executable_basename(cmd.executable());
+    let args = cmd.arguments();
+    if is_known_interpreter(&base) {
+        if let Some(first) = args.first() {
+            if first == "-c" || first == "-e" {
+                return Some("interpreter eval flag");
+            }
+            if first == "-m" {
+                if let Some(module) = args.get(1) {
+                    let module_lower = module.to_lowercase();
+                    if module_lower == "pip" || module_lower == "easy_install" {
+                        return Some("interpreter package-manager module");
+                    }
+                }
+            }
+        }
+    }
+    if args
+        .iter()
+        .any(|a| kavach_core::shell::has_substitution_hazard(a))
+    {
+        return Some("shell substitution or expansion in arguments");
+    }
+    None
+}
+
+/// Machine-readable reason when the shell-hazard baseline fires.
+///
+/// Scans **every** argument with the shared
+/// [`kavach_core::scan_dangerous_shell_constructs`] scanner, regardless of
+/// executable — deliberately not scoped to known interpreters, so a bare
+/// `echo 'x' > file` cannot slip past an executable allowlist. Substitution
+/// hazards are excluded here (they stay attributed to the
+/// dangerous-interpreter baseline above); chaining, piping, redirection and
+/// subshell grouping are reported. Returns `None` when no covered hazard is
+/// present. Never echoes argument payloads.
+pub(crate) fn shell_hazard_reason(cmd: &kavach_core::resource::CommandResource) -> Option<String> {
+    use kavach_core::shell::ShellHazard;
+    use std::collections::BTreeSet;
+    let mut kinds: BTreeSet<ShellHazard> = BTreeSet::new();
+    for arg in cmd.arguments() {
+        for hazard in kavach_core::scan_dangerous_shell_constructs(arg) {
+            match hazard {
+                ShellHazard::CommandSubstitution
+                | ShellHazard::Backtick
+                | ShellHazard::EnvVarBraced
+                | ShellHazard::EnvVar => {}
+                _ => {
+                    kinds.insert(hazard);
+                }
+            }
+        }
+    }
+    if kinds.is_empty() {
+        return None;
+    }
+    let labels: Vec<&str> = kinds.iter().map(|h| h.as_str()).collect();
+    Some(format!("shell hazards in arguments: {}", labels.join(", ")))
 }
 
 /// Join rule IDs into a comma-separated string for human explanation.
@@ -256,18 +579,32 @@ fn join_ids(ids: &[RuleId]) -> String {
         .join(", ")
 }
 
+/// Maximum distinct failed-condition names retained in a [`DecisionTrace`].
+const MAX_TRACE_FAILED_CONDITIONS: usize = 16;
+
 /// Check whether a compiled rule's conditions match the given request.
 ///
-/// Path glob checking uses the already-compiled [`globset::GlobSet`] stored in
-/// [`CompiledRule::path_matcher`]; no new compilation occurs.
-fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
+/// Returns `(matched, failed_conditions)`: the dimension names that failed,
+/// in evaluation order (first failure short-circuits, so at most one name per
+/// rule). Path glob checking uses the already-compiled [`globset::GlobSet`]
+/// stored in [`CompiledRule::path_matcher`]; no new compilation occurs.
+fn rule_match_outcome(cr: &CompiledRule, request: &ToolRequest) -> (bool, Vec<&'static str>) {
     let cond = &cr.rule.conditions;
+    let mut failed: Vec<&'static str> = Vec::new();
+    // Record one failure and return. Only the first failing dimension per
+    // rule is reported to keep traces bounded and deterministic.
+    macro_rules! fail {
+        ($name:literal) => {{
+            failed.push($name);
+            return (false, failed);
+        }};
+    }
 
     // --- Operation check ---
     if !cond.operations.is_empty() {
         let op = request.operation.discriminant();
         if !cond.operations.iter().any(|o| o == op) {
-            return false;
+            fail!("operations");
         }
     }
 
@@ -275,7 +612,7 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
     if !cond.resource_kinds.is_empty() {
         let kind = request.resource.kind();
         if !cond.resource_kinds.contains(&kind) {
-            return false;
+            fail!("resource_kinds");
         }
     }
 
@@ -283,7 +620,7 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
     if !cond.agent_ids.is_empty() {
         let agent = request.subject.agent_id.as_str();
         if !cond.agent_ids.iter().any(|a| a == agent) {
-            return false;
+            fail!("agent_ids");
         }
     }
 
@@ -292,7 +629,7 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
         let subject_rank = trust_level_rank(&request.subject.trust_level);
         let min_rank = trust_level_rank(&min_trust);
         if subject_rank < min_rank {
-            return false;
+            fail!("min_trust_level");
         }
     }
 
@@ -306,7 +643,7 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
             .collect();
         for required in &cond.required_capabilities {
             if !declared.contains(&required.as_str()) {
-                return false;
+                fail!("required_capabilities");
             }
         }
     }
@@ -316,10 +653,10 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
         match &request.context.declared_intent {
             Some(intent) => {
                 if !intent.starts_with(prefix) {
-                    return false;
+                    fail!("intent_prefix");
                 }
             }
-            None => return false,
+            None => fail!("intent_prefix"),
         }
     }
 
@@ -328,11 +665,34 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
         match &request.resource {
             kavach_core::resource::Resource::Command(cmd) => {
                 if !exes.iter().any(|e| e == cmd.executable()) {
-                    return false;
+                    fail!("executables");
                 }
             }
             // Non-command resources never match when executables is configured.
-            _ => return false,
+            _ => fail!("executables"),
+        }
+    }
+
+    // --- Argument rules check — per-argument glob match ---
+    // Runs right after the executable check: `deny_if_matches` vetoes the
+    // rule when any pattern hits any single argument; `require_match`
+    // keeps the rule only when some pattern hits some single argument.
+    if cond.argument_rules.is_some() {
+        match &request.resource {
+            kavach_core::resource::Resource::Command(cmd) => {
+                if let Some(ref deny_matcher) = cr.arg_deny_matcher {
+                    if cmd.arguments().iter().any(|a| deny_matcher.is_match(a)) {
+                        fail!("argument_rules");
+                    }
+                }
+                if let Some(ref require_matcher) = cr.arg_require_matcher {
+                    if !cmd.arguments().iter().any(|a| require_matcher.is_match(a)) {
+                        fail!("argument_rules");
+                    }
+                }
+            }
+            // Non-command resources never match when argument rules configured.
+            _ => fail!("argument_rules"),
         }
     }
 
@@ -341,10 +701,10 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
         match &request.resource {
             kavach_core::resource::Resource::NetworkEndpoint(nr) => {
                 if !hosts.iter().any(|h| h == nr.host().as_str()) {
-                    return false;
+                    fail!("network_hosts");
                 }
             }
-            _ => return false,
+            _ => fail!("network_hosts"),
         }
     }
 
@@ -353,10 +713,10 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
         match &request.resource {
             kavach_core::resource::Resource::NetworkEndpoint(nr) => {
                 if !schemes.iter().any(|s| s == nr.scheme().as_str()) {
-                    return false;
+                    fail!("network_schemes");
                 }
             }
-            _ => return false,
+            _ => fail!("network_schemes"),
         }
     }
 
@@ -374,10 +734,10 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
                     }
                 });
                 if !matches {
-                    return false;
+                    fail!("network_ports");
                 }
             }
-            _ => return false,
+            _ => fail!("network_ports"),
         }
     }
 
@@ -386,10 +746,10 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
         match &request.resource {
             kavach_core::resource::Resource::Secret { identifier } => {
                 if !ids.iter().any(|i| i == identifier) {
-                    return false;
+                    fail!("secret_identifiers");
                 }
             }
-            _ => return false,
+            _ => fail!("secret_identifiers"),
         }
     }
 
@@ -398,26 +758,78 @@ fn rule_matches(cr: &CompiledRule, request: &ToolRequest) -> bool {
         match &request.resource {
             kavach_core::resource::Resource::ExternalTool { identifier } => {
                 if !ids.iter().any(|i| i == identifier) {
-                    return false;
+                    fail!("tool_identifiers");
                 }
             }
-            _ => return false,
+            _ => fail!("tool_identifiers"),
         }
     }
 
     // --- Path glob check — uses pre-compiled GlobSet ---
     if let Some(ref matcher) = cr.path_matcher {
         let resource_path = match request.resource.path() {
-            Some(p) => p.normalized(),
+            Some(p) => p,
             // Non-file/directory resources never match when a path matcher is configured.
-            None => return false,
+            None => fail!("path_globs"),
         };
-        if !matcher.is_match(resource_path) {
-            return false;
+        if !path_matches_with_cwd(
+            matcher,
+            cr.has_relative_patterns,
+            resource_path,
+            request.context.working_directory.as_ref(),
+        ) {
+            fail!("path_globs");
         }
     }
 
-    true
+    (true, failed)
+}
+
+/// Match a resource path against a compiled glob set, with a
+/// `working_directory`-relative fallback for relative patterns.
+///
+/// 1. Try the normalized resource path directly (preserves all existing
+///    absolute-pattern behavior).
+/// 2. If that misses, the rule has relative patterns, and the resource path
+///    is absolute: strip the request `working_directory` prefix and match the
+///    remainder against the same set. A relative `sympy/**/*.py` pattern then
+///    matches `/workspace/sympy/core/x.py` when the request ran with
+///    `working_directory="/workspace"`.
+/// 3. With no `working_directory` context the fallback cannot run — the
+///    caller should have surfaced a [`crate::model::PolicyWarning`] at load
+///    time instead of silently relying on this path.
+fn path_matches_with_cwd(
+    matcher: &globset::GlobSet,
+    has_relative_patterns: bool,
+    resource_path: &kavach_core::resource::NormalizedPath,
+    working_directory: Option<&kavach_core::resource::NormalizedPath>,
+) -> bool {
+    let normalized = resource_path.normalized();
+    if matcher.is_match(normalized) {
+        return true;
+    }
+    if !has_relative_patterns || !resource_path.is_absolute() {
+        return false;
+    }
+    let wd = match working_directory {
+        Some(w) => w.normalized(),
+        None => return false,
+    };
+    match strip_workspace_prefix(normalized, wd) {
+        Some(remainder) => matcher.is_match(remainder),
+        None => false,
+    }
+}
+
+/// Strip a workspace prefix from an absolute normalized path, returning the
+/// relative remainder. Comparison is component-aware (prefix must end on a
+/// `/` boundary), so `/workspace2/x` is not treated as under `/workspace`.
+fn strip_workspace_prefix<'a>(absolute: &'a str, workspace: &str) -> Option<&'a str> {
+    if workspace == "/" {
+        return absolute.strip_prefix('/');
+    }
+    let rest = absolute.strip_prefix(workspace)?;
+    rest.strip_prefix('/')
 }
 
 #[cfg(test)]
@@ -3104,5 +3516,408 @@ mod tests {
         assert_eq!(d1.reason, d2.reason);
         assert_eq!(d1.matched_rule_ids, d2.matched_rule_ids);
         assert_eq!(d1.request_id, d2.request_id);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1 regression tests (audit fixes)
+    // -----------------------------------------------------------------------
+
+    fn allow_python_policy() -> Policy {
+        policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-python").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["python".into()]),
+                    ..Default::default()
+                },
+            }],
+        )
+    }
+
+    fn cmd_request_with(exe: &str, args: &[&str], context: RequestContext) -> ToolRequest {
+        make_request_with(
+            make_subject(),
+            Operation::CommandExecute,
+            Resource::Command(
+                kavach_core::resource::CommandResource::new(
+                    exe,
+                    args.iter().map(|s| s.to_string()).collect(),
+                )
+                .unwrap(),
+            ),
+            context,
+        )
+    }
+
+    // (a) `python -m pip install evil` is denied by the baseline even though
+    // the allow-rule lists bare `python`.
+    #[test]
+    fn baseline_denies_python_m_pip() {
+        let engine = PolicyEngine::new(vec![allow_python_policy()]).unwrap();
+        let req = cmd_request_with("python", &["-m", "pip", "install", "evil"], make_context());
+        let decision = engine.evaluate(&req);
+        assert_eq!(decision.effect, DecisionEffect::Deny);
+        assert_eq!(decision.reason, ReasonCode::KavachDenyExplicitRule);
+        assert!(
+            decision
+                .matched_rule_ids
+                .contains(&RuleId::new(BASELINE_DANGEROUS_INTERPRETER_RULE_ID).unwrap())
+        );
+        let trace = match decision.trace {
+            Some(t) => t,
+            None => panic!("baseline denial carries a trace"),
+        };
+        assert!(trace.baseline_triggered.is_some());
+    }
+
+    // (b) `python -c "..."` is denied by the baseline.
+    #[test]
+    fn baseline_denies_python_c_payload() {
+        let engine = PolicyEngine::new(vec![allow_python_policy()]).unwrap();
+        let req = cmd_request_with(
+            "python",
+            &["-c", "import os; os.system('id')"],
+            make_context(),
+        );
+        let decision = engine.evaluate(&req);
+        assert_eq!(decision.effect, DecisionEffect::Deny);
+        assert_eq!(decision.reason, ReasonCode::KavachDenyExplicitRule);
+    }
+
+    #[test]
+    fn baseline_denies_perl_ruby_node_eval_flags() {
+        for (exe, flag) in [
+            ("perl", "-e"),
+            ("ruby", "-e"),
+            ("node", "-e"),
+            ("python3", "-c"),
+        ] {
+            assert!(
+                is_known_dangerous_invocation(
+                    &kavach_core::resource::CommandResource::new(
+                        exe,
+                        vec![flag.to_string(), "payload".to_string()]
+                    )
+                    .unwrap()
+                ),
+                "{exe} {flag} should be baseline-dangerous"
+            );
+        }
+    }
+
+    #[test]
+    fn baseline_leaves_benign_interpreter_use_alone() {
+        // `python script.py` / `node server.js` are NOT baseline hits; the
+        // allow-rule still decides.
+        let engine = PolicyEngine::new(vec![allow_python_policy()]).unwrap();
+        let req = cmd_request_with("python", &["script.py"], make_context());
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+    }
+
+    // Phase 1b: bare chaining/piping/redirection/subshell hazards in
+    // arguments are denied for ANY executable, even allow-listed ones.
+    #[test]
+    fn baseline_denies_echo_redirect_for_allowlisted_executable() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-echo").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["echo".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+        let req = cmd_request_with("echo", &["x", ">", "file"], make_context());
+        let decision = engine.evaluate(&req);
+        assert_eq!(decision.effect, DecisionEffect::Deny);
+        assert_eq!(decision.reason, ReasonCode::KavachDenyExplicitRule);
+        assert!(
+            decision
+                .matched_rule_ids
+                .contains(&RuleId::new(BASELINE_SHELL_HAZARD_RULE_ID).unwrap())
+        );
+        let trace = match decision.trace {
+            Some(t) => t,
+            None => panic!("baseline denial carries a trace"),
+        };
+        assert!(trace.baseline_triggered.is_some());
+    }
+
+    #[test]
+    fn baseline_shell_hazard_leaves_clean_args_alone() {
+        // `echo hello` has no hazard: the allow-rule still decides.
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-echo").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["echo".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+        let req = cmd_request_with("echo", &["hello"], make_context());
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Allow);
+        // Pipes / chaining on non-interpreters are denied too.
+        let piped = cmd_request_with("echo", &["a", "|", "cat"], make_context());
+        assert_eq!(engine.evaluate(&piped).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn baseline_denies_substitution_hazard_in_args() {
+        let engine = PolicyEngine::new(vec![allow_python_policy()]).unwrap();
+        let req = cmd_request_with("python", &["script.py", "$(id)"], make_context());
+        assert_eq!(engine.evaluate(&req).effect, DecisionEffect::Deny);
+    }
+
+    // (c) `argument_rules`: deny_if_matches and require_match.
+    #[test]
+    fn argument_rules_deny_if_matches_vetoes_rule() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-git-safe").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["git".into()]),
+                    argument_rules: Some(crate::model::ArgumentRules {
+                        deny_if_matches: Some(vec!["--hard".into()]),
+                        require_match: None,
+                    }),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let safe = cmd_request_with("git", &["status"], make_context());
+        assert_eq!(engine.evaluate(&safe).effect, DecisionEffect::Allow);
+
+        let hard = cmd_request_with("git", &["reset", "--hard"], make_context());
+        let decision = engine.evaluate(&hard);
+        assert_eq!(decision.effect, DecisionEffect::Deny);
+        assert_eq!(decision.reason, ReasonCode::KavachDenyDefault);
+    }
+
+    #[test]
+    fn argument_rules_require_match_gates_rule() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-kubectl-get").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["kubectl".into()]),
+                    argument_rules: Some(crate::model::ArgumentRules {
+                        deny_if_matches: None,
+                        require_match: Some(vec!["get".into()]),
+                    }),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        let get = cmd_request_with("kubectl", &["get", "pods"], make_context());
+        assert_eq!(engine.evaluate(&get).effect, DecisionEffect::Allow);
+
+        let delete = cmd_request_with("kubectl", &["delete", "pods"], make_context());
+        assert_eq!(engine.evaluate(&delete).effect, DecisionEffect::Deny);
+    }
+
+    #[test]
+    fn argument_rules_match_per_argument_not_joined() {
+        // Pattern `*pip*` hits the single argument `-mpip` but must NOT
+        // bridge two separate arguments `-m` + `pip`.
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-py").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["python".into()]),
+                    argument_rules: Some(crate::model::ArgumentRules {
+                        deny_if_matches: Some(vec!["pip".into()]),
+                        require_match: None,
+                    }),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // Exact single-argument `pip` vetoes...
+        let exact = cmd_request_with("python", &["pip"], make_context());
+        // ...but the baseline does not fire here (no -c/-m/substitution),
+        // and the rule veto applies only to the exact arg.
+        assert_eq!(engine.evaluate(&exact).effect, DecisionEffect::Deny);
+
+        // Separate `-m`, `pip` args: `pip` arg still vetoes (per-arg match).
+        let split = cmd_request_with("python", &["-m", "pip"], make_context());
+        // Baseline fires first for `-m pip` (package-manager module).
+        assert_eq!(engine.evaluate(&split).effect, DecisionEffect::Deny);
+    }
+
+    // (d) Relative pattern matches both relative and absolute (with cwd).
+    #[test]
+    fn relative_pattern_matches_absolute_with_working_directory() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-sympy").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    operations: vec!["file_read".into()],
+                    path_globs: Some(vec!["sympy/**/*.py".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+
+        // Relative resource matches directly.
+        let rel = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("sympy/core/x.py").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&rel).effect, DecisionEffect::Allow);
+
+        // Absolute resource matches via working_directory fallback.
+        let wd_ctx = RequestContext::new(Some("/workspace"), None, None, None, false).unwrap();
+        let abs_wd = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/workspace/sympy/core/x.py").unwrap(),
+            wd_ctx,
+        );
+        assert_eq!(engine.evaluate(&abs_wd).effect, DecisionEffect::Allow);
+
+        // Same absolute path WITHOUT cwd context still misses (and the
+        // load-time warning covers the surprise — see test (e)).
+        let abs_no_wd = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/workspace/sympy/core/x.py").unwrap(),
+            make_context(),
+        );
+        assert_eq!(engine.evaluate(&abs_no_wd).effect, DecisionEffect::Deny);
+
+        // Component-aware: `/workspace2/...` must NOT match wd `/workspace`.
+        let wd_ctx2 = RequestContext::new(Some("/workspace"), None, None, None, false).unwrap();
+        let outside = make_request_with(
+            make_subject(),
+            Operation::FileRead { max_bytes: None },
+            Resource::file("/workspace2/sympy/core/x.py").unwrap(),
+            wd_ctx2,
+        );
+        assert_eq!(engine.evaluate(&outside).effect, DecisionEffect::Deny);
+    }
+
+    // (e) Relative pattern with no cwd context emits a validation warning.
+    #[test]
+    fn relative_pattern_emits_load_time_warning() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-rel").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["sympy/**/*.py".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+        let warnings = engine.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].rule_id.as_str(), "allow-rel");
+        assert!(warnings[0].message.contains("working_directory"));
+
+        // Absolute patterns produce no warnings.
+        let engine_abs = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-abs").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    path_globs: Some(vec!["/workspace/**/*.py".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+        assert!(engine_abs.warnings().is_empty());
+    }
+
+    // (f) Empty-string working_directory is None (regression guard).
+    #[test]
+    fn empty_working_directory_is_none() {
+        let ctx = RequestContext::new(Some(""), None, None, None, false).unwrap();
+        assert!(ctx.working_directory.is_none());
+    }
+
+    // (g) Backslash normalization matrix (regression guard).
+    #[test]
+    fn backslash_normalization_matrix() {
+        use kavach_core::resource::NormalizedPath;
+        let cases = [
+            ("C:\\a/b\\c.txt", "C:/a/b/c.txt"),
+            ("a\\..\\b", "b"),
+            ("trailing\\", "trailing"),
+            ("mixed//a\\\\b", "mixed/a/b"),
+        ];
+        for (raw, expected) in cases {
+            let path = NormalizedPath::new(raw).unwrap();
+            assert_eq!(path.normalized(), expected, "raw: {raw}");
+        }
+        let unc = NormalizedPath::new("\\\\server\\share\\x").unwrap();
+        assert!(unc.normalized().contains("server"));
+        assert!(unc.normalized().contains("share"));
+        assert!(!unc.normalized().contains('\\'));
+    }
+
+    // Trace sanity: failed conditions are reported, additive fields survive.
+    #[test]
+    fn decision_trace_reports_failed_conditions() {
+        let engine = PolicyEngine::new(vec![policy(
+            DefaultEffect::Deny,
+            vec![Rule {
+                id: RuleId::new("allow-kubectl").unwrap(),
+                description: "".into(),
+                effect: PolicyEffect::Allow,
+                conditions: RuleConditions {
+                    executables: Some(vec!["kubectl".into()]),
+                    ..Default::default()
+                },
+            }],
+        )])
+        .unwrap();
+        let req = cmd_request_with("docker", &["ps"], make_context());
+        let decision = engine.evaluate(&req);
+        assert_eq!(decision.effect, DecisionEffect::Deny);
+        let trace = match decision.trace {
+            Some(t) => t,
+            None => panic!("decision carries a trace"),
+        };
+        assert!(trace.baseline_triggered.is_none());
+        assert!(trace.failed_conditions.contains(&"executables".to_string()));
     }
 }

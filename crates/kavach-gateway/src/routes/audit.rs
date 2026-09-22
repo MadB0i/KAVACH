@@ -24,6 +24,11 @@ pub async fn list_events(
     if limit == 0 {
         return Err(GatewayError::bad_request("limit must be greater than 0"));
     }
+    if query.after.is_some() && query.before.is_some() {
+        return Err(GatewayError::bad_request(
+            "after and before cannot be used together",
+        ));
+    }
 
     let runtime = state
         .runtime
@@ -38,8 +43,16 @@ pub async fn list_events(
             .ok_or_else(|| GatewayError::bad_request(format!("unknown category: {cat_str}")))?;
         store.events_by_category(category, limit)
     } else {
-        let after = query.after.unwrap_or(0);
-        store.events_after_sequence(after, limit)
+        match (query.after, query.before) {
+            (Some(after), None) => store.events_after_sequence(after, limit),
+            (None, Some(before)) => store.events_before_sequence(before, limit),
+            (None, None) => store.events_before_sequence(i64::MAX as u64, limit),
+            (Some(_), Some(_)) => {
+                return Err(GatewayError::bad_request(
+                    "after and before cannot be used together",
+                ));
+            }
+        }
     }
     .map_err(|e| {
         tracing::error!(request_id = ?rid, "audit query failed: {e}");
@@ -87,22 +100,23 @@ pub async fn verify_chain(
 }
 
 fn parse_category(s: &str) -> Option<AuditEventCategory> {
-    match s {
-        "RequestReceived" => Some(AuditEventCategory::RequestReceived),
-        "RequestRejected" => Some(AuditEventCategory::RequestRejected),
-        "DecisionAllow" => Some(AuditEventCategory::DecisionAllow),
-        "DecisionDeny" => Some(AuditEventCategory::DecisionDeny),
-        "ApprovalRequested" => Some(AuditEventCategory::ApprovalRequested),
-        "ApprovalApproved" => Some(AuditEventCategory::ApprovalApproved),
-        "ApprovalDenied" => Some(AuditEventCategory::ApprovalDenied),
-        "ApprovalExpired" => Some(AuditEventCategory::ApprovalExpired),
-        "ExecutionStarted" => Some(AuditEventCategory::ExecutionStarted),
-        "ExecutionSucceeded" => Some(AuditEventCategory::ExecutionSucceeded),
-        "ExecutionFailed" => Some(AuditEventCategory::ExecutionFailed),
-        "PolicyLoaded" => Some(AuditEventCategory::PolicyLoaded),
-        "PolicyRejected" => Some(AuditEventCategory::PolicyRejected),
-        "AuditVerification" => Some(AuditEventCategory::AuditVerification),
-        "SecurityWarning" => Some(AuditEventCategory::SecurityWarning),
+    match s.to_ascii_lowercase().as_str() {
+        "requestreceived" => Some(AuditEventCategory::RequestReceived),
+        "requestrejected" => Some(AuditEventCategory::RequestRejected),
+        "decisionallow" | "allow" | "allowed" => Some(AuditEventCategory::DecisionAllow),
+        "decisiondeny" | "deny" | "denied" => Some(AuditEventCategory::DecisionDeny),
+        "approvalrequested" | "approval" => Some(AuditEventCategory::ApprovalRequested),
+        "approvalapproved" | "approve" => Some(AuditEventCategory::ApprovalApproved),
+        "approvaldenied" => Some(AuditEventCategory::ApprovalDenied),
+        "approvalexpired" => Some(AuditEventCategory::ApprovalExpired),
+        "approvalconsumed" => Some(AuditEventCategory::ApprovalConsumed),
+        "executionstarted" => Some(AuditEventCategory::ExecutionStarted),
+        "executionsucceeded" => Some(AuditEventCategory::ExecutionSucceeded),
+        "executionfailed" => Some(AuditEventCategory::ExecutionFailed),
+        "policyloaded" => Some(AuditEventCategory::PolicyLoaded),
+        "policyrejected" => Some(AuditEventCategory::PolicyRejected),
+        "auditverification" => Some(AuditEventCategory::AuditVerification),
+        "securitywarning" => Some(AuditEventCategory::SecurityWarning),
         _ => None,
     }
 }

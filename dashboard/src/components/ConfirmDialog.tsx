@@ -1,3 +1,4 @@
+import { AlertTriangle, X } from 'lucide-react';
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 
 interface ConfirmDialogProps {
@@ -10,6 +11,7 @@ interface ConfirmDialogProps {
   onCancel: () => void;
   showReason?: boolean;
   children?: ReactNode;
+  confirmDisabled?: boolean;
 }
 
 export default function ConfirmDialog({
@@ -22,23 +24,49 @@ export default function ConfirmDialog({
   onCancel,
   showReason = false,
   children,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   const [reason, setReason] = useState('');
   const dialogRef = useRef<HTMLDivElement>(null);
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
   const reasonInputRef = useRef<HTMLTextAreaElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (open) {
+      previousFocusRef.current = document.activeElement as HTMLElement | null;
       setReason('');
-      setTimeout(() => confirmBtnRef.current?.focus(), 50);
+      document.body.classList.add('modal-open');
+      window.setTimeout(() => {
+        if (showReason) reasonInputRef.current?.focus();
+        else confirmBtnRef.current?.focus();
+      }, 50);
     }
-  }, [open]);
+    return () => {
+      document.body.classList.remove('modal-open');
+      previousFocusRef.current?.focus();
+    };
+  }, [open, showReason]);
 
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (e: globalThis.KeyboardEvent) => {
       if (e.key === 'Escape') onCancel();
+      if (e.key === 'Tab' && dialogRef.current) {
+        const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ));
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last?.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first?.focus();
+        }
+      }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
@@ -61,10 +89,16 @@ export default function ConfirmDialog({
   };
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
-      <div className="modal" ref={dialogRef} onKeyDown={handleKeyDown}>
-        <h2 className="modal__title" id="confirm-dialog-title">{title}</h2>
-        <p className="modal__message">{message}</p>
+    <div className="modal-overlay" role="presentation">
+      <div className="modal" ref={dialogRef} onKeyDown={handleKeyDown} role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
+        <div className="modal__header">
+          <span className={`modal__icon modal__icon--${confirmVariant}`}><AlertTriangle size={18} /></span>
+          <div>
+            <h2 className="modal__title" id="confirm-dialog-title">{title}</h2>
+            <p className="modal__message" id="confirm-dialog-message">{message}</p>
+          </div>
+          <button className="modal__close" type="button" onClick={onCancel} aria-label="Close dialog"><X size={17} /></button>
+        </div>
         {children}
         {showReason && (
           <div className="modal__field">
@@ -88,7 +122,7 @@ export default function ConfirmDialog({
             ref={confirmBtnRef}
             className={`btn btn--${confirmVariant}`}
             onClick={handleConfirm}
-            disabled={showReason && !reason.trim()}
+            disabled={confirmDisabled || (showReason && !reason.trim())}
             aria-label={confirmLabel}
           >
             {confirmLabel}

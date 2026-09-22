@@ -162,8 +162,12 @@ impl ExecuteRequest {
             .permit
             .matched_rule_ids
             .iter()
-            .filter_map(|s| RuleId::new(s).ok())
-            .collect();
+            .map(|id| {
+                RuleId::new(id).map_err(|error| {
+                    GatewayError::bad_request(format!("invalid matched rule ID in permit: {error}"))
+                })
+            })
+            .collect::<Result<_, _>>()?;
 
         let request_digest: [u8; 32] = {
             let bytes = hex::decode(&self.permit.request_digest)
@@ -248,6 +252,12 @@ pub struct DenyBody {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumeApprovalBody {
+    pub request: ToolRequest,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApprovalRecordDto {
     pub approval_id: String,
@@ -293,6 +303,7 @@ impl From<kavach_approval::ApprovalRecord> for ApprovalRecordDto {
 #[serde(deny_unknown_fields)]
 pub struct AuditEventsQuery {
     pub after: Option<u64>,
+    pub before: Option<u64>,
     pub request_id: Option<String>,
     pub category: Option<String>,
     pub limit: Option<u64>,
@@ -310,6 +321,7 @@ pub struct AuditEventDto {
     pub resource_kind: Option<String>,
     pub decision: Option<String>,
     pub reason_code: Option<String>,
+    pub summary: Option<String>,
     pub matched_rule_ids: Vec<String>,
     pub previous_hash: String,
     pub current_hash: String,
@@ -328,6 +340,7 @@ impl From<kavach_audit::AuditEventRecord> for AuditEventDto {
             resource_kind: e.resource_kind,
             decision: e.decision,
             reason_code: e.reason_code,
+            summary: e.resource_summary,
             matched_rule_ids: e.matched_rule_ids,
             previous_hash: e.previous_hash.to_string(),
             current_hash: e.current_hash.to_string(),
