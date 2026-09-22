@@ -240,6 +240,38 @@ for require-approval. Input/config, policy, audit, internal, and unavailable
 errors use distinct non-zero codes; run `kavach --help` for the current command
 surface.
 
+## Kavach Agent Security OS Layer
+
+The Agent Security OS Layer is a persistent, local security layer that sits on
+top of your OS: a background dashboard plus per-tool hook adapters for every
+AI coding agent CLI with a blocking pre-execution hook (Claude Code, Codex
+CLI, OpenCode). To be precise about what it is: a **cooperative hook-based
+enforcement layer** across supported tools — not kernel-level interception,
+not system-wide control of uncooperative processes. A tool without a hook API,
+or one run with hooks disabled, stays outside this layer by construction.
+
+```powershell
+# One command wires every detected agent CLI (additive merge, never overwrite)
+kavach setup
+kavach setup --start-dashboard   # also launch the local dashboard
+
+# Manual wiring (before/after setup — same scripts)
+# Claude Code: merge adapters/claude/settings.global.snippet.json
+#   into ~/.claude/settings.json (PreToolUse, exit 2 blocks)
+# Codex CLI: save adapters/codex/hooks.snippet.json as ~/.codex/hooks.json
+#   (hooks are on by default; no feature flag needed)
+# OpenCode: add adapters/opencode/kavach-hook.mjs to "plugin" in opencode.json
+```
+
+Each adapter translates the tool's hook payload into the same ToolRequest
+shape `policy check` consumes, routes it through
+`policy explain --feed-log <shared-path> --json`, and maps the decision to
+the hook contract (Allow → exit 0, Deny → exit 2 with the trace reason on
+stderr, RequireApproval → exit 2 as Deny in v1). Because every adapter feeds
+the same log, `kavach-dashboard` shows all tools in one feed. Start from
+[`config/privacy-starter.toml`](config/privacy-starter.toml), which denies
+credential paths and unlisted outbound hosts out of the box.
+
 ## MCP usage
 
 The CLI can act as a stdio security adapter between an MCP client and a

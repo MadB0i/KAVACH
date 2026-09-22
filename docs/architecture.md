@@ -78,3 +78,16 @@ does not generate or print credentials.
 The production console is served under `/dashboard/`. `/health` and `/ready`
 are public probes, while `/api/*` requires the bearer token. The dashboard
 holds the token in React memory only, so a refresh returns to login.
+
+## Agent security layer (cooperative hooks, not kernel interception)
+
+The "Agent Security OS Layer" branding refers to a persistent local
+convenience layer: per-tool PreToolUse hook adapters (Claude Code, Codex
+CLI, OpenCode) plus the `kavach-dashboard` feed. Technically it is a
+**cooperative hook-based enforcement layer**: each adapter translates the
+tool's own hook payload into a ToolRequest, evaluates it with the standard
+policy engine, and returns the tool's native allow/deny verdict. There is
+no kernel driver, no process tracing, and no system-wide interception —
+any tool without a hook API, or run with hooks disabled or bypassed,
+executes outside this layer. Do not describe it as OS- or kernel-level
+enforcement in technical or paper-facing text.

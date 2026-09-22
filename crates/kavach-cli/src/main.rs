@@ -80,6 +80,15 @@ enum Commands {
         #[command(subcommand)]
         action: McpAction,
     },
+    /// Wire the agent security layer into installed agent CLIs
+    Setup {
+        /// Policy file for all wired hooks (defaults to the staged privacy starter pack)
+        #[arg(short, long)]
+        policy: Option<String>,
+        /// Also start kavach-dashboard after wiring
+        #[arg(long)]
+        start_dashboard: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -248,6 +257,10 @@ fn main() {
                 }
             }
         },
+        Some(Commands::Setup {
+            policy,
+            start_dashboard,
+        }) => commands::setup::run(policy.as_deref(), start_dashboard, mode),
         Some(Commands::Serve { config }) => {
             let rt = tokio::runtime::Runtime::new();
             match rt {

@@ -1,0 +1,28 @@
+{
+  "$comment": "Kavach Agent Security OS Layer - Codex CLI hooks. Save as ~/.codex/hooks.json (or merge the PreToolUse entries into config.toml [hooks]) with YOUR paths (or let `kavach setup` do it). Hooks are enabled by default; no codex_hooks feature flag needed.",
+  "description": "Kavach pre-execution gate for Bash and apply_patch",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:/Kavach/adapters/codex/kavach-codex-hook.ps1\" -Policy \"C:/Kavach/config/privacy-starter.toml\" -FeedLog \"C:/Kavach/decisions.jsonl\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:/Kavach/adapters/codex/kavach-codex-hook.ps1\" -Policy \"C:/Kavach/config/privacy-starter.toml\" -FeedLog \"C:/Kavach/decisions.jsonl\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
