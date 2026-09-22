@@ -329,7 +329,7 @@ Counts are executed tests, not estimates:
 
 | Suite | Result |
 |---|---:|
-| Rust workspace (`cargo test --workspace`) | 687 passed, 0 failed |
+| Rust workspace (`cargo test --workspace`) | 688 passed, 0 failed |
 | Clippy, all targets (`-D warnings`) | clean |
 | Formatting (`cargo fmt --check`) | clean |
 | Hook-adapter exit-code matrix (Pester) | 20 passed, 0 failed |
@@ -405,7 +405,7 @@ Implementation work on this project — including fixes prioritized from
 an independent security audit — was carried out with AI coding
 assistants (Claude Code, OpenCode). All architecture decisions, security
 trade-offs, and design direction were made by the author; every change
-was reviewed, tested (687 Rust tests plus the adapter exit-code suite
+was reviewed, tested (688 Rust tests plus the adapter exit-code suite
 above), and committed by the author, who is responsible for the result.
 
 ## Contributing and project policy
