@@ -13,6 +13,10 @@ written to a tamper-evident audit chain.
 
 ![KAVACH overview dashboard in dark mode](docs/assets/dashboard-overview-dark.png)
 
+![Kavach local decision dashboard](docs/screenshots/dashboard.png)
+
+*Local decision dashboard (`kavach-dashboard`): live Allow/Deny feed with per-decision trace expansion, filterable history, and a read-only policy summary.*
+
 ## Why KAVACH
 
 Agent tool calls cross real trust boundaries. KAVACH gives operators one local
@@ -229,6 +233,19 @@ cargo run -p kavach-cli -- approval --config config/kavach.example.toml list
 cargo run -p kavach-cli -- audit verify --database data/kavach-audit.db
 cargo run -p kavach-cli -- audit list --database data/kavach-audit.db
 
+# Batch-test a policy against expected outcomes (exit 23 on any failure;
+# scenarios.json holds {"scenarios": [{"name", "expected", "request"}]})
+cargo run -p kavach-cli -- policy test \
+  --policy config/policy.example.toml \
+  --scenarios scenarios.json
+
+# Wire the agent hook layer into installed agent CLIs
+cargo run -p kavach-cli -- setup
+cargo run -p kavach-cli -- setup --start-dashboard
+
+# Local decision dashboard (live feed + history + read-only policy summary)
+cargo run -p kavach-dashboard -- --policy config/policy.example.toml
+
 # Machine-readable output
 cargo run -p kavach-cli -- --output json policy check \
   --policy config/policy.example.toml \
@@ -305,25 +322,29 @@ supports supplying a different command and arguments. The adapter uses a fixed
 local agent/session identity in the CLI today. These constraints are tracked as
 pre-release limitations, not hidden configuration options.
 
-## Verification snapshot
+## Tested & Verified
 
-The current audited working tree was verified locally on Windows on 2026-07-22.
-Counts are executable tests, not estimates:
+The working tree was verified locally on Windows on 2026-09-22.
+Counts are executed tests, not estimates:
 
 | Suite | Result |
 |---|---:|
-| Rust workspace, debug, all features | 644 passed |
-| Rust workspace, release, all features | 644 passed |
-| Dashboard Vitest suite | 39 passed |
-| Example binaries | 6 binaries passed; `demo-agent` passed 10 scenarios |
-| PowerShell demo | 6 example binaries passed |
+| Rust workspace (`cargo test --workspace`) | 687 passed, 0 failed |
+| Clippy, all targets (`-D warnings`) | clean |
+| Formatting (`cargo fmt --check`) | clean |
+| Hook-adapter exit-code matrix (Pester) | 20 passed, 0 failed |
 
-The full local verification also passed formatting, all-target/all-feature
-checking, Clippy with warnings denied, documentation generation, benchmark
-compilation, dashboard lint, dashboard production build, example policy/config
-validation, and audit-chain verification. This snapshot does not claim that
-remote CI, nightly fuzzing, or unrun operating systems passed. See the
-[implementation state](docs/implementation-state.md) and [agent
+The Pester suite pins exact process exit codes for the Claude Code and Codex
+CLI hook adapters on every decision path (Allow, baseline-Deny, rule-Deny,
+RequireApproval-as-Deny) plus fail-closed behavior when the binary is
+missing, stdin is malformed, or the policy check errors or times out — the
+class of bug that could silently turn a Deny into an Allow. Engine behavior
+was additionally validated against an independent audit harness
+(KavachBench): 42/42 attack actions blocked with the tuned policy, and the
+`python -m pip` / `python -c` / `echo`-redirect evasions now deny at the
+engine layer. This snapshot does not claim that remote CI, nightly fuzzing,
+or unrun operating systems passed. See the [implementation
+state](docs/implementation-state.md) and [agent
 handoff](docs/agent-handoff.md) for the recorded audit scope.
 
 ## Security principles
@@ -377,6 +398,15 @@ security boundary.
 
 The minimum supported Rust version is 1.85 (edition 2024). Policies that name
 executables or platform-specific paths should be reviewed on every target OS.
+
+## AI-Assisted Development
+
+Implementation work on this project — including fixes prioritized from
+an independent security audit — was carried out with AI coding
+assistants (Claude Code, OpenCode). All architecture decisions, security
+trade-offs, and design direction were made by the author; every change
+was reviewed, tested (687 Rust tests plus the adapter exit-code suite
+above), and committed by the author, who is responsible for the result.
 
 ## Contributing and project policy
 
